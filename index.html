@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 語音知識助理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen font-sans pb-10">
+
+    <header class="bg-blue-600 text-white shadow-lg py-4 sticky top-0 z-10">
+        <h1 class="text-2xl font-bold text-center">🎙️ AI 語音知識大腦</h1>
+    </header>
+
+    <main class="max-w-lg mx-auto mt-8 px-4 space-y-8">
+
+        <section class="bg-white rounded-2xl shadow-md p-6 border border-gray-200">
+            <h2 class="text-xl font-bold mb-4 text-gray-800 flex items-center">
+                <span class="bg-blue-100 text-blue-600 rounded-full w-8 h-8 flex items-center justify-center mr-2">1</span>
+                上傳錄音建立記憶
+            </h2>
+            <input type="file" id="audioFile" accept="audio/*" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mb-4 transition">
+            
+            <button id="uploadBtn" onclick="uploadAudio()" class="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition duration-200 shadow-md">
+                🚀 開始萃取知識
+            </button>
+            
+            <div id="uploadStatus" class="text-sm font-medium text-blue-600 mt-4 text-center hidden animate-pulse">GPU 正在全力運轉聽寫中... ⚡</div>
+            <div id="uploadResult" class="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-100 text-sm text-gray-700 hidden max-h-60 overflow-y-auto whitespace-pre-wrap leading-relaxed shadow-inner"></div>
+        </section>
+
+        <section class="bg-white rounded-2xl shadow-md p-6 border border-gray-200">
+            <h2 class="text-xl font-bold mb-4 text-gray-800 flex items-center">
+                <span class="bg-green-100 text-green-600 rounded-full w-8 h-8 flex items-center justify-center mr-2">2</span>
+                詢問 AI 助理
+            </h2>
+            <input type="text" id="questionInput" placeholder="例如：咖啡因是如何提神的？" class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 mb-4 text-base transition">
+            
+            <button id="askBtn" onclick="askQuestion()" class="w-full bg-green-500 text-white font-bold py-3 rounded-xl hover:bg-green-600 transition duration-200 shadow-md">
+                💬 提問
+            </button>
+            
+            <div id="askStatus" class="text-sm font-medium text-green-600 mt-4 text-center hidden animate-pulse">大腦檢索與思考中... 🧠</div>
+            <div id="askResult" class="mt-4 p-5 bg-green-50 border border-green-200 rounded-xl text-sm text-gray-800 hidden whitespace-pre-wrap leading-relaxed shadow-inner"></div>
+        </section>
+
+    </main>
+
+    <script>
+        // 上傳音檔的函數
+        async function uploadAudio() {
+            const fileInput = document.getElementById('audioFile');
+            const statusDiv = document.getElementById('uploadStatus');
+            const resultDiv = document.getElementById('uploadResult');
+            const btn = document.getElementById('uploadBtn');
+
+            if (fileInput.files.length === 0) {
+                alert('請先選擇一個音訊檔案！');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            statusDiv.classList.remove('hidden');
+            resultDiv.classList.add('hidden');
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/upload-audio/', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    statusDiv.innerHTML = '✅ ' + data.message;
+                    statusDiv.classList.remove('animate-pulse');
+                    resultDiv.innerHTML = '<strong class="text-blue-700 text-lg">📝 結構化重點：</strong>\n\n' + data.structured_knowledge;
+                    resultDiv.classList.remove('hidden');
+                } else {
+                    statusDiv.innerHTML = '❌ 發生錯誤';
+                    alert(data.message);
+                }
+            } catch (error) {
+                statusDiv.innerHTML = '❌ 網路錯誤';
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        // 發問的函數
+        async function askQuestion() {
+            const questionInput = document.getElementById('questionInput').value;
+            const statusDiv = document.getElementById('askStatus');
+            const resultDiv = document.getElementById('askResult');
+            const btn = document.getElementById('askBtn');
+
+            if (!questionInput) {
+                alert('請輸入您的問題！');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            statusDiv.classList.remove('hidden');
+            resultDiv.classList.add('hidden');
+
+            try {
+                const response = await fetch('/ask-question/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: questionInput })
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    statusDiv.classList.add('hidden');
+                    resultDiv.innerHTML = '<strong class="text-green-700 text-lg">🤖 AI 解答：</strong>\n\n' + data.answer;
+                    resultDiv.classList.remove('hidden');
+                } else {
+                    statusDiv.innerHTML = '❌ 發生錯誤';
+                    alert(data.message);
+                }
+            } catch (error) {
+                statusDiv.innerHTML = '❌ 網路錯誤';
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+    </script>
+</body>
+</html>
