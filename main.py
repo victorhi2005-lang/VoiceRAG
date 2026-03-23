@@ -42,24 +42,24 @@ async def upload_audio(file: UploadFile = File(...)): #UploadFile 接收前端�
             language="zh",
             initial_prompt="這是一段繁體中文的台灣口音逐字稿：" #提示 Whisper
         )
-        transcript_text = "".join([segment.text for segment in segments])
+        transcript_text = "".join([segment.text for segment in segments]) #把每段文字取出後合併
     except Exception as e:
             return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
-
+#給 LLM 的指令
     try:
         prompt = f"""
         你是一個專業的知識整理助手。請將以下的口述逐字稿，
-        整理成結構化的重點知識（包含標題與條列式說明），並去除口語化的冗言贅字。
+        整理成結構化的重點知識（包含標題與條列式說明），並去除口語化的冗言贅字。 
         ⚠️ 絕對要求：請務必使用「繁體中文 (Traditional Chinese)」輸出！
         口述逐字稿內容：\n{transcript_text}
         """
-        response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': prompt}])
-        structured_knowledge = response['message']['content']
+        response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': prompt}]) #呼叫 Ollama LLM
+        structured_knowledge = response['message']['content'] #取得整理後的文字
     except Exception as e:
         return {"status": "error", "message": f"AI 整理失敗: {str(e)}"}
-
+#把 AI 整理好的結構化知識切成小段、轉成向量，然後存到向量資料庫
     try:
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", "。", "！", "？", "，", " "])
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", "。", "！", "？", "，", " "])#每段最多 500 個字 每段有 100 字重疊，保留前後文連貫性 優先按段落、換行、標點切割
         chunks = text_splitter.split_text(structured_knowledge)
 
         for i, chunk in enumerate(chunks):
