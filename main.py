@@ -29,18 +29,18 @@ print("✅ 所有 AI 系統與資料庫載入完成！")
 
 # API 1：上傳音檔並寫入記憶庫 
 
-@app.post("/upload-audio/")
-async def upload_audio(file: UploadFile = File(...)):
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+@app.post("/upload-audio/") #建立 API 端點
+async def upload_audio(file: UploadFile = File(...)): #UploadFile 接收前端上傳的檔案 File(...) 必填參數
+    file_path = os.path.join(UPLOAD_DIR, file.filename) #建立檔案路徑(資料夾+檔名)
+    with open(file_path, "wb") as buffer: #開啟檔案寫入(2進位)
+        shutil.copyfileobj(file.file, buffer) #把上傳的檔案內容複製到伺服器檔案
         
     try:
         segments, info = model.transcribe(
             file_path,
-            beam_size=5,
+            beam_size=5, #模型同時嘗試 5 種可能句子
             language="zh",
-            initial_prompt="這是一段繁體中文的台灣口音逐字稿："
+            initial_prompt="這是一段繁體中文的台灣口音逐字稿：" #提示 Whisper
         )
         transcript_text = "".join([segment.text for segment in segments])
     except Exception as e:
