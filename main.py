@@ -63,9 +63,9 @@ async def upload_audio(file: UploadFile = File(...)): #UploadFile 接收前端�
         chunks = text_splitter.split_text(structured_knowledge)
 
         for i, chunk in enumerate(chunks):
-            vector = embeddings_model.embed_query(chunk)
-            chunk_id = f"{file.filename}_chunk_{i}"
-            collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}])
+            vector = embeddings_model.embed_query(chunk)#文字轉成數字向量
+            chunk_id = f"{file.filename}_chunk_{i}"#建立 chunk ID 讓資料庫能識別每段文字
+            collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}]) #把資料存進 Vector Database。
     except Exception as e:
         return {"status": "error", "message": f"寫入向量資料庫失敗: {str(e)}"}
 
@@ -78,7 +78,7 @@ async def upload_audio(file: UploadFile = File(...)): #UploadFile 接收前端�
     }
 
 
-# API 2：【全新加入】AI 知識問答端點
+# API 2：AI 知識問答
 
 # 定義接收前端問題的格式
 class QuestionRequest(BaseModel):
@@ -90,7 +90,7 @@ async def ask_question(request: QuestionRequest):
         # 1. 將使用者的問題轉成數學向量
         query_vector = embeddings_model.embed_query(request.question)
         
-        # 2. 去 ChromaDB 尋找最相關的 3 段記憶 (小抄)
+        # 2. 去 ChromaDB 尋找最相關的5段
         results = collection.query(
             query_embeddings=[query_vector],
             n_results=5
@@ -99,7 +99,7 @@ async def ask_question(request: QuestionRequest):
         # 把找到的記憶片段組合起來
         retrieved_context = "\n\n".join(results['documents'][0])
         
-        # 3. 設計超級 Prompt：強迫 AI 只能根據小抄回答
+        # 3. Prompt：強迫 AI 只能根據小抄回答
         rag_prompt = f"""
         你現在是一個嚴格且專業的「知識庫檢索助理」。
         請你【完全且只能】依據下方的【參考資料】來回答使用者的問題。
@@ -107,7 +107,7 @@ async def ask_question(request: QuestionRequest):
         ⚠️ 絕對遵守以下四條規則：
         1.【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字！
         2. 如果【參考資料】中有答案，請用條理清晰、分點說明的方式（繁體中文）回答。
-        3. 如果【參考資料】的內容無法完全回答問題，請誠實回答：「根據目前資料庫的錄音紀錄，並未提及此資訊」，【絕對不可以】使用你自身的常識來腦補或編造答案。
+        3. 如果【參考資料】的內容無法完全回答問題，【絕對不可以】使用你自身的常識來腦補或編造答案。
         4. 回答完畢後，請在最後簡述你主要是參考了哪幾段資料。
 
         【參考資料】：
@@ -121,7 +121,7 @@ async def ask_question(request: QuestionRequest):
         response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': rag_prompt}])
         ai_answer = response['message']['content']
         
-        # 5. 回傳答案與引用的資料來源 (讓教授知道這不是亂掰的)
+        # 5. 回傳答案與引用的資料來源 
         return {
             "status": "success",
             "question": request.question,
