@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel # 📍 新增：用來定義接收問題的資料格式
-import shutil #管理資料夾
+import shutil #複製檔案
 import os #管理資料夾
 from faster_whisper import WhisperModel 
 import ollama
@@ -10,14 +10,14 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter #把長文�
 from langchain_community.embeddings import HuggingFaceEmbeddings #文字 → 向量
 
 app = FastAPI()
-UPLOAD_DIR = "audio_uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = "audio_uploads" #設定音檔上傳資料夾
+os.makedirs(UPLOAD_DIR, exist_ok=True) #建立資料夾（如果不存在）
 
 
 # 系統初始化區塊
 
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = chroma_client.get_or_create_collection(name="mis_knowledge")
+chroma_client = chromadb.PersistentClient(path="./chroma_db") #建立 ChromaDB 的資料庫連線
+collection = chroma_client.get_or_create_collection(name="mis_knowledge") #建立一個 資料集合
 
 print("正在載入 Embedding 向量模型，請稍候...")
 embeddings_model = HuggingFaceEmbeddings(model_name="shibing624/text2vec-base-chinese")
