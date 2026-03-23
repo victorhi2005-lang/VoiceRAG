@@ -1,21 +1,21 @@
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel # 📍 新增：用來定義接收問題的資料格式
-import shutil
-import os
-from faster_whisper import WhisperModel
+import shutil #管理資料夾
+import os #管理資料夾
+from faster_whisper import WhisperModel 
 import ollama
 
-import chromadb
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+import chromadb #向量資料庫(存放數字轉向量)
+from langchain_text_splitters import RecursiveCharacterTextSplitter #把長文章拆成小段。
+from langchain_community.embeddings import HuggingFaceEmbeddings #文字 → 向量
 
 app = FastAPI()
 UPLOAD_DIR = "audio_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ==========================================
-# 系統初始化區塊 (大腦與記憶體載入)
-# ==========================================
+
+# 系統初始化區塊
+
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 collection = chroma_client.get_or_create_collection(name="mis_knowledge")
 
@@ -26,9 +26,9 @@ print("正在載入本地端 Whisper 模型，請稍候...")
 model = WhisperModel("large-v3", device="cuda", compute_type="float16")
 print("✅ 所有 AI 系統與資料庫載入完成！")
 
-# ==========================================
-# API 1：上傳音檔並寫入記憶庫 (之前寫好的)
-# ==========================================
+
+# API 1：上傳音檔並寫入記憶庫 
+
 @app.post("/upload-audio/")
 async def upload_audio(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
@@ -77,9 +77,8 @@ async def upload_audio(file: UploadFile = File(...)):
         "structured_knowledge": structured_knowledge
     }
 
-# ==========================================
+
 # API 2：【全新加入】AI 知識問答端點
-# ==========================================
 
 # 定義接收前端問題的格式
 class QuestionRequest(BaseModel):
