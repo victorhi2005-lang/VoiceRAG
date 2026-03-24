@@ -7,7 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
     <style>
-        /* 自訂捲軸*/
+        /*自訂捲軸*/
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
@@ -120,7 +120,7 @@
 
             if (!question) return;
 
-            // 1. 將使用者的問題加入畫面對話中
+            // 將使用者的問題加入畫面對話中
             appendMessage('User', question);
             
             // 清空輸入框並恢復預設高度
@@ -132,7 +132,7 @@
             btn.classList.add('opacity-40', 'cursor-not-allowed');
             inputEl.disabled = true;
             
-            // 2. 顯示 AI 正在思考的狀態
+            // 顯示 AI 正在思考的狀態
             const loadingId = 'loading-' + Date.now();
             appendMessage('AI', '...', loadingId, true);
 
@@ -171,12 +171,12 @@
             if (id) div.id = id;
 
             if (sender === 'User') {
-                // 使用者的文字框：靠右、淺灰色底
+                // 使用者的文字框
                 div.innerHTML = `
                     <div class="bg-gray-100 px-5 py-3.5 rounded-3xl text-gray-800 whitespace-pre-wrap max-w-2xl ml-auto text-base">${text}</div>
                 `;
             } else {
-                // AI 的文字框：靠左、純文字、有頭像
+                // AI 的文字框
                 const pulseClass = animate ? 'animate-pulse' : '';
                 div.innerHTML = `
                     <div class="w-8 h-8 rounded-full bg-gray-900 flex items-center justify-center text-white font-medium mr-4 shrink-0 mt-1">AI</div>
