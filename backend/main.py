@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File
 import shutil
 import os
 from faster_whisper import WhisperModel
+import ollama
 
 app = FastAPI()
 UPLOAD_DIR = "audio_uploads"
@@ -17,19 +18,29 @@ async def upload_audio(file: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
+    # 語音辨識
     try:
-        segments, info = model.transcribe(
-            file_path,
-            beam_size=5,
-            language="zh",
-            initial_prompt="這是一段中文的逐字稿："
-        )
+        segments, info = model.transcribe(file_path, beam_size=5, language="zh", initial_prompt="這是一段中文的逐字稿：")
         transcript_text = "".join([segment.text for segment in segments])
     except Exception as e:
         return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
 
+    # AI 知識萃取
+    try:
+        prompt = f"""
+        你是一個專業的知識整理助手。請將以下的口述逐字稿，
+        整理成結構化的重點知識（包含標題與條列式說明），並去除口語化的冗言贅字。
+        ⚠️ 絕對要求：請務必使用「繁體中文 (Traditional Chinese)」輸出！
+        口述逐字稿內容：\n{transcript_text}
+        """
+        response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': prompt}])
+        structured_knowledge = response['message']['content']
+    except Exception as e:
+        return {"status": "error", "message": f"AI 整理失敗: {str(e)}"}
+
     return {
         "filename": file.filename, 
         "status": "success",
-        "raw_transcript": transcript_text
+        "raw_transcript": transcript_text,
+        "structured_knowledge": structured_knowledge
     }
