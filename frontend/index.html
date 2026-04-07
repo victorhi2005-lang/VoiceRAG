@@ -1,1 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 知識庫系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+    <style>
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
+    </style>
+</head>
+<body class="bg-white flex h-screen overflow-hidden text-gray-800 font-sans">
 
+    <aside class="w-80 bg-gray-50 border-r border-gray-200 flex flex-col hidden md:flex">
+        <div class="p-5 border-b border-gray-200">
+            <h1 class="text-xl font-medium text-gray-900">知識庫控制台</h1>
+        </div>
+        
+        <div class="p-5 flex-1 overflow-y-auto space-y-8">
+            <div class="space-y-3">
+                <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-widest">建立記憶</h2>
+                <input type="file" id="audioFile" accept="audio/*" class="w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-white file:border file:border-gray-300 file:text-gray-700 hover:file:bg-gray-100 transition cursor-pointer">
+                <button id="uploadBtn" onclick="uploadAudio()" class="w-full bg-gray-900 text-white font-medium py-2.5 rounded-lg hover:bg-black transition duration-200">
+                    開始萃取
+                </button>
+                <div id="uploadStatus" class="text-sm text-gray-400 text-center hidden animate-pulse">系統處理中...</div>
+            </div>
+
+            <div class="space-y-3">
+                <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-widest">最新萃取重點</h2>
+                <div id="uploadResult" class="p-4 bg-white border border-gray-100 rounded-lg text-sm text-gray-700 hidden max-h-[40vh] overflow-y-auto whitespace-pre-wrap leading-relaxed shadow-sm"></div>
+            </div>
+        </div>
+    </aside>
