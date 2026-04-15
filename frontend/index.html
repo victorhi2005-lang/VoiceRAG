@@ -36,3 +36,78 @@
             </div>
         </div>
     </aside>
+
+        <main class="flex-1 flex flex-col relative bg-white">
+        
+        <div id="chatHistory" class="flex-1 overflow-y-auto p-4 md:p-8 pb-40 space-y-8">
+            <div class="flex max-w-4xl mx-auto">
+                <div class="w-8 h-8 rounded-full bg-gray-900 flex items-center justify-center text-white font-medium mr-4 shrink-0">AI</div>
+                <div class="text-gray-800 pt-1">
+                    <p>你好！我是你的專屬 AI 知識助理。請先從左側上傳語音檔案建立知識庫，接著就能開始進行檢索提問。</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-10 pb-6 px-4 md:px-8">
+            <div class="max-w-3xl mx-auto relative flex items-end bg-gray-50 rounded-2xl p-2 border border-gray-200 focus-within:ring-1 focus-within:ring-gray-300 focus-within:bg-white transition-colors shadow-sm">
+                <textarea id="questionInput" rows="1" class="w-full max-h-40 bg-transparent border-none focus:ring-0 px-4 py-3 outline-none text-base resize-none" placeholder=""></textarea>
+                
+                <button id="askBtn" onclick="askQuestion()" class="p-3 m-1 bg-gray-900 text-white rounded-xl hover:bg-black transition duration-200 shrink-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="text-center text-xs text-gray-400 mt-3">AI 系統檢索可能會有誤差，請以實際知識庫內容為主。</div>
+        </div>
+    </main>
+
+    <script>
+        const inputEl = document.getElementById('questionInput');
+        inputEl.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                askQuestion();
+            }
+        });
+
+        inputEl.addEventListener("input", function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        }, false);
+
+        async function uploadAudio() {
+            const fileInput = document.getElementById('audioFile');
+            const statusDiv = document.getElementById('uploadStatus');
+            const resultDiv = document.getElementById('uploadResult');
+            const btn = document.getElementById('uploadBtn');
+
+            if (fileInput.files.length === 0) return;
+
+            btn.disabled = true;
+            btn.classList.add('opacity-40', 'cursor-not-allowed');
+            statusDiv.classList.remove('hidden');
+            resultDiv.classList.add('hidden');
+            statusDiv.innerHTML = '正在聆聽並萃取...';
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/upload-audio/', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    statusDiv.classList.add('hidden');
+                    resultDiv.innerHTML = data.structured_knowledge;
+                    resultDiv.classList.remove('hidden');
+                } else {
+                    statusDiv.innerHTML = '發生錯誤';
+                }
+            } catch (error) {
+                statusDiv.innerHTML = '網路連線異常';
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-40', 'cursor-not-allowed');
+            }
+        }
