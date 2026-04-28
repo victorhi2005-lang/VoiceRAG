@@ -33,7 +33,7 @@ embeddings_model = HuggingFaceEmbeddings(model_name="shibing624/text2vec-base-ch
 
 print("正在載入本地端 Whisper 模型，請稍候...")
 model = WhisperModel("large-v3", device="cuda", compute_type="float16")
-print("✅ 所有 AI 系統與資料庫載入完成！")
+print("[OK] 所有 AI 系統與資料庫載入完成！")
 
 
 # API 1：上傳音檔並寫入記憶庫 
@@ -59,7 +59,7 @@ async def upload_audio(file: UploadFile = File(...)):
         prompt = f"""
         你是一個專業的知識整理助手。請將以下的口述逐字稿，
         整理成結構化的重點知識（包含標題與條列式說明），並去除口語化的冗言贅字。
-        絕對要求：請務必使用「繁體中文 (Traditional Chinese)」輸出！
+        ⚠️ 絕對要求：請務必使用「繁體中文 (Traditional Chinese)」輸出！
         口述逐字稿內容：\n{transcript_text}
         """
         response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': prompt}])
