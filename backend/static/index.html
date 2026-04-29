@@ -50,7 +50,7 @@
         <!-- Chat History -->
         <div id="chatHistory" class="flex-1 overflow-y-auto p-6 md:p-10 space-y-8 min-h-0">
             <!-- Initial AI Message -->
-            <div class="flex max-w-4xl mx-auto w-full">
+            <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
                 <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1">🤖</div>
                 <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm">你好！我是你的專屬 VoiceRAG 知識助理。
 請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
@@ -203,6 +203,11 @@
 
         // 動態生成對話泡泡的函數
         function appendMessage(sender, text, id = null, animate = false) {
+            const welcomeMsg = document.getElementById('initialWelcomeMessage');
+            if (welcomeMsg) {
+                welcomeMsg.remove();
+            }
+
             const chatHistory = document.getElementById('chatHistory');
             const div = document.createElement('div');
             div.className = "flex max-w-4xl mx-auto w-full";
