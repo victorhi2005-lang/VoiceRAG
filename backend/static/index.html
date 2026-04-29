@@ -3,63 +3,75 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 知識庫系統</title>
+    <title>VoiceRAG 知識庫系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
     <style>
-        /* 自訂捲軸*/
+        /* Dark scrollbar */
         ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
+        ::-webkit-scrollbar-track { background: #1a1a1a; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+        body { background-color: #131314; color: #e5e7eb; }
     </style>
 </head>
-<body class="bg-white flex h-screen overflow-hidden text-gray-800 font-sans">
+<body class="flex h-screen overflow-hidden font-sans">
 
-    <aside class="w-80 bg-gray-50 border-r border-gray-200 flex flex-col hidden md:flex">
-        <div class="p-5 border-b border-gray-200">
-            <h1 class="text-xl font-medium text-gray-900">知識庫控制台</h1>
+    <!-- Left Sidebar -->
+    <aside class="w-1/3 bg-[#1e1f22] border-r border-[#333] flex flex-col hidden md:flex shrink-0 m-3 mr-1 rounded-xl overflow-hidden shadow-lg">
+        <div class="p-4 border-b border-[#333] flex justify-between items-center">
+            <h1 class="text-sm font-semibold text-gray-200">來源</h1>
         </div>
         
-        <div class="p-5 flex-1 overflow-y-auto space-y-8">
-            <div class="space-y-3">
-                <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-widest">建立記憶</h2>
-                <input type="file" id="audioFile" accept="audio/*" class="w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-white file:border file:border-gray-300 file:text-gray-700 hover:file:bg-gray-100 transition cursor-pointer">
-                <button id="uploadBtn" onclick="uploadAudio()" class="w-full bg-gray-900 text-white font-medium py-2.5 rounded-lg hover:bg-black transition duration-200">
-                    開始萃取
-                </button>
-                <div id="uploadStatus" class="text-sm text-gray-400 text-center hidden animate-pulse">系統處理中...</div>
-            </div>
+        <div class="p-4 flex-1 overflow-y-auto space-y-5">
+            <!-- Add Source Button -->
+            <label for="audioFile" class="flex items-center justify-center w-full py-2 border border-[#555] rounded-lg text-sm text-gray-300 hover:bg-[#333] hover:text-white cursor-pointer transition">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4 mr-2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                新增來源
+            </label>
+            <input type="file" id="audioFile" accept="audio/*" class="hidden" onchange="uploadAudio()">
 
-            <div class="space-y-3">
-                <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-widest">最新萃取重點</h2>
-                <div id="uploadResult" class="p-4 bg-white border border-gray-100 rounded-lg text-sm text-gray-700 hidden max-h-[40vh] overflow-y-auto whitespace-pre-wrap leading-relaxed shadow-sm"></div>
+            <!-- Sources List -->
+            <div class="space-y-2">
+                <div id="sourcesList" class="space-y-2">
+                    <!-- Dynamically added sources will go here -->
+                </div>
             </div>
         </div>
     </aside>
 
-    <main class="flex-1 flex flex-col relative bg-white h-screen overflow-hidden">
-        
-        <div id="chatHistory" class="flex-1 overflow-y-auto p-4 md:p-8 pb-8 space-y-8 min-h-0">
-            <div class="flex max-w-4xl mx-auto">
-                <div class="w-8 h-8 rounded-full bg-gray-900 flex items-center justify-center text-white font-medium mr-4 shrink-0">AI</div>
-                <div class="text-gray-800 pt-1">
-                    <p>你好！我是你的專屬 AI 知識助理。請先從左側上傳語音檔案建立知識庫，接著就能開始進行檢索提問。</p>
-                </div>
+    <!-- Main Chat Area -->
+    <main class="flex-1 flex flex-col relative h-screen overflow-hidden m-3 ml-2 rounded-xl border border-[#333] bg-[#1e1f22] shadow-lg">
+        <!-- Header -->
+        <div class="p-4 flex justify-between items-center border-b border-[#333]">
+            <h2 class="text-sm font-semibold text-gray-200">對話</h2>
+        </div>
+
+        <!-- Chat History -->
+        <div id="chatHistory" class="flex-1 overflow-y-auto p-6 md:p-10 space-y-8 min-h-0">
+            <!-- Initial AI Message -->
+            <div class="flex max-w-4xl mx-auto w-full">
+                <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1">🤖</div>
+                <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm">你好！我是你的專屬 VoiceRAG 知識助理。
+請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
             </div>
         </div>
 
-        <div class="w-full shrink-0 bg-white pt-2 pb-6 px-4 md:px-8">
-            <div class="max-w-3xl mx-auto relative flex items-end bg-gray-50 rounded-2xl p-2 border border-gray-200 focus-within:ring-1 focus-within:ring-gray-300 focus-within:bg-white transition-colors shadow-sm">
-                <textarea id="questionInput" rows="1" class="w-full max-h-40 bg-transparent border-none focus:ring-0 px-4 py-3 outline-none text-base resize-none" placeholder=""></textarea>
+        <!-- Input Area -->
+        <div class="w-full shrink-0 pt-2 pb-6 px-6 md:px-10">
+            <div class="max-w-4xl mx-auto relative flex items-end bg-[#2d2f34] rounded-2xl p-1.5 border border-[#444] focus-within:border-gray-400 transition-colors shadow-lg">
+                <textarea id="questionInput" rows="1" class="w-full max-h-40 bg-transparent border-none focus:ring-0 px-4 py-3 outline-none text-gray-200 text-sm resize-none placeholder-gray-500" placeholder="開始輸入..."></textarea>
                 
-                <button id="askBtn" onclick="askQuestion()" class="p-3 m-1 bg-gray-900 text-white rounded-xl hover:bg-black transition duration-200 shrink-0">
+                <button id="askBtn" onclick="askQuestion()" class="p-2.5 m-1 bg-[#3a3a3a] text-gray-300 rounded-xl hover:bg-[#555] hover:text-white transition duration-200 shrink-0">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
                     </svg>
                 </button>
             </div>
-            <div class="text-center text-xs text-gray-400 mt-3">AI 系統檢索可能會有誤差，請以實際知識庫內容為主。</div>
+            <div class="text-center text-xs text-gray-500 mt-3 flex justify-between max-w-4xl mx-auto px-2">
+                <span></span>
+                <span>VoiceRAG 提供的資訊未必正確，請查證回覆內容。</span>
+            </div>
         </div>
     </main>
 
@@ -80,37 +92,63 @@
 
         async function uploadAudio() {
             const fileInput = document.getElementById('audioFile');
-            const statusDiv = document.getElementById('uploadStatus');
-            const resultDiv = document.getElementById('uploadResult');
-            const btn = document.getElementById('uploadBtn');
-
             if (fileInput.files.length === 0) return;
 
-            btn.disabled = true;
-            btn.classList.add('opacity-40', 'cursor-not-allowed');
-            statusDiv.classList.remove('hidden');
-            resultDiv.classList.add('hidden');
-            statusDiv.innerHTML = '正在聆聽並萃取...';
+            const file = fileInput.files[0];
+            const sourcesList = document.getElementById('sourcesList');
+            
+            // Generate IDs
+            const tempSourceId = 'source-' + Date.now();
+            const loadingMsgId = 'msg-' + Date.now();
+
+            // Add loading state to sidebar
+            const tempSourceHtml = `
+                <div id="${tempSourceId}" class="flex items-center justify-between text-sm text-gray-400 p-2 rounded hover:bg-[#333] transition animate-pulse">
+                    <div class="flex items-center space-x-2 overflow-hidden">
+                        <svg class="w-4 h-4 shrink-0 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                        <span class="truncate">${file.name} (處理中...)</span>
+                    </div>
+                </div>
+            `;
+            sourcesList.insertAdjacentHTML('beforeend', tempSourceHtml);
+
+            // Add loading message to chat
+            appendMessage('AI', '正在為您處理音檔《' + file.name + '》並萃取知識重點，請稍候...', loadingMsgId, true);
 
             const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
+            formData.append('file', file);
 
             try {
                 const response = await fetch('/upload-audio/', { method: 'POST', body: formData });
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    statusDiv.classList.add('hidden');
-                    resultDiv.innerHTML = data.structured_knowledge;
-                    resultDiv.classList.remove('hidden');
+                    // Update sidebar with actual source
+                    document.getElementById(tempSourceId).outerHTML = `
+                        <div class="flex items-center justify-between text-sm text-gray-300 p-2 rounded hover:bg-[#333] transition cursor-pointer">
+                            <div class="flex items-center space-x-2 overflow-hidden">
+                                <span class="text-blue-500 font-bold">▶</span>
+                                <span class="truncate" title="${file.name}">${file.name}</span>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Remove loading message & show result in chat
+                    document.getElementById(loadingMsgId).remove();
+                    const formattedResult = `**《${file.name}》重點摘要**\n\n${data.structured_knowledge}`;
+                    appendMessage('AI', formattedResult);
                 } else {
-                    statusDiv.innerHTML = '發生錯誤';
+                    document.getElementById(tempSourceId).remove();
+                    document.getElementById(loadingMsgId).remove();
+                    appendMessage('AI', '❌ 處理音檔時發生錯誤：' + (data.message || '未知錯誤'));
                 }
             } catch (error) {
-                statusDiv.innerHTML = '網路連線異常';
+                document.getElementById(tempSourceId).remove();
+                document.getElementById(loadingMsgId).remove();
+                appendMessage('AI', '❌ 網路連線異常，請檢查伺服器狀態。');
             } finally {
-                btn.disabled = false;
-                btn.classList.remove('opacity-40', 'cursor-not-allowed');
+                // Reset file input
+                fileInput.value = '';
             }
         }
 
@@ -134,7 +172,7 @@
             
             // 2. 顯示 AI 正在思考的狀態
             const loadingId = 'loading-' + Date.now();
-            appendMessage('AI', '...', loadingId, true);
+            appendMessage('AI', '思考中...', loadingId, true);
 
             try {
                 const response = await fetch('/ask-question/', {
@@ -150,11 +188,11 @@
                 if (data.status === 'success') {
                     appendMessage('AI', data.answer);
                 } else {
-                    appendMessage('AI', '系統發生錯誤：' + data.message);
+                    appendMessage('AI', '❌ 系統發生錯誤：' + (data.message || '未知錯誤'));
                 }
             } catch (error) {
                 document.getElementById(loadingId).remove();
-                appendMessage('AI', '網路連線異常，請檢查後端狀態。');
+                appendMessage('AI', '❌ 網路連線異常，請檢查後端狀態。');
             } finally {
                 btn.disabled = false;
                 btn.classList.remove('opacity-40', 'cursor-not-allowed');
@@ -171,22 +209,22 @@
             if (id) div.id = id;
 
             if (sender === 'User') {
-                // 使用者的文字框：靠右、淺灰色底
+                // User message: Dark bubble aligned right
                 div.innerHTML = `
-                    <div class="bg-gray-100 px-5 py-3.5 rounded-3xl text-gray-800 whitespace-pre-wrap max-w-2xl ml-auto text-base">${text}</div>
+                    <div class="bg-[#333] px-5 py-3.5 rounded-3xl text-gray-200 whitespace-pre-wrap max-w-2xl ml-auto text-sm border border-[#444] shadow-md">${text}</div>
                 `;
             } else {
-                // AI 的文字框：靠左、純文字、有頭像
+                // AI message: Align left with icon
                 const pulseClass = animate ? 'animate-pulse' : '';
                 div.innerHTML = `
-                    <div class="w-8 h-8 rounded-full bg-gray-900 flex items-center justify-center text-white font-medium mr-4 shrink-0 mt-1">AI</div>
-                    <div class="text-gray-800 pt-2 whitespace-pre-wrap leading-relaxed max-w-3xl text-base ${pulseClass}">${text}</div>
+                    <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1 shadow-md">🤖</div>
+                    <div class="text-gray-300 pt-2 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm ${pulseClass}">${text}</div>
                 `;
             }
 
             chatHistory.appendChild(div);
             
-            // 新對話出現時，自動捲動到最底部
+            // Scroll to bottom
             chatHistory.scrollTo({
                 top: chatHistory.scrollHeight,
                 behavior: 'smooth'

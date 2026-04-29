@@ -56,20 +56,9 @@ async def upload_audio(file: UploadFile = File(...)):
             return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
 
     try:
-        prompt = f"""
-        你是一個專業的知識整理助手。請將以下的口述逐字稿，
-        整理成結構化的重點知識（包含標題與條列式說明），並去除口語化的冗言贅字。
-        ⚠️ 絕對要求：請務必使用「繁體中文 (Traditional Chinese)」輸出！
-        口述逐字稿內容：\n{transcript_text}
-        """
-        response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': prompt}])
-        structured_knowledge = response['message']['content']
-    except Exception as e:
-        return {"status": "error", "message": f"AI 整理失敗: {str(e)}"}
-
-    try:
+        # 1. 將原始逐字稿切片並寫入向量資料庫（保留所有細節供日後問答）
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", "。", "！", "？", "，", " "])
-        chunks = text_splitter.split_text(structured_knowledge)
+        chunks = text_splitter.split_text(transcript_text)
 
         for i, chunk in enumerate(chunks):
             vector = embeddings_model.embed_query(chunk)
@@ -77,6 +66,22 @@ async def upload_audio(file: UploadFile = File(...)):
             collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}])
     except Exception as e:
         return {"status": "error", "message": f"寫入向量資料庫失敗: {str(e)}"}
+
+    try:
+        # 2. 用 AI 針對完整訊息進行分析，產生整體重點摘要供前端顯示
+        prompt = f"""
+        你是一個專業的 AI 知識分析助手。請閱讀以下的口述語音逐字稿，
+        進行深入的訊息分析，並給出一份精煉的「整體重點摘要」。
+        請用流暢的段落來總結核心訊息，幫助讀者快速掌握整段語音的精華。
+        
+        ⚠️ 絕對要求：請務必使用「繁體中文 (Traditional Chinese)」輸出，嚴禁出現簡體字！
+        
+        語音逐字稿內容：\n{transcript_text}
+        """
+        response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': prompt}])
+        structured_knowledge = response['message']['content']
+    except Exception as e:
+        return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
 
     return {
         "filename": file.filename, 
