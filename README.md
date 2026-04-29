@@ -338,11 +338,11 @@ rag_project/
 ### 6.1 甘特圖
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4A90D9', 'primaryTextColor': '#000', 'primaryBorderColor': '#2C5F8A', 'secondaryColor': '#6FCF97', 'tertiaryColor': '#F2C94C', 'taskTextColor': '#000', 'taskTextOutsideColor': '#000', 'taskTextDarkColor': '#000', 'taskTextClickableColor': '#000', 'sectionBkgColor': '#E8EEF5', 'sectionBkgColor2': '#F5F0E1', 'gridColor': 'transparent', 'doneTaskBkgColor': '#A8D5A2', 'doneTaskBorderColor': '#5B9A5B', 'activeTaskBkgColor': '#81B1DB', 'activeTaskBorderColor': '#3A7BBF', 'taskBkgColor': '#D6E4F0', 'taskBorderColor': '#4A90D9', 'titleColor': '#000', 'todayLineColor': 'transparent', 'textColor': '#000'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4A90D9', 'primaryTextColor': '#000', 'primaryBorderColor': '#2C5F8A', 'secondaryColor': '#6FCF97', 'tertiaryColor': '#F2C94C', 'taskTextColor': '#000', 'taskTextOutsideColor': '#333', 'sectionBkgColor': '#E8EEF5', 'sectionBkgColor2': '#F5F0E1', 'gridColor': '#CCCCCC', 'doneTaskBkgColor': '#A8D5A2', 'doneTaskBorderColor': '#5B9A5B', 'activeTaskBkgColor': '#81B1DB', 'activeTaskBorderColor': '#3A7BBF', 'taskBkgColor': '#D6E4F0', 'taskBorderColor': '#4A90D9', 'titleColor': '#333', 'todayLineColor': '#E83737'}}}%%
 gantt
     title VoiceRAG 專案開發甘特圖
     dateFormat YYYY-MM-DD
-    axisFormat  
+    axisFormat %m/%d
 
     section 需求分析
     需求訪談與痛點分析       :done, req1, 2026-02-23, 5d
@@ -370,6 +370,7 @@ gantt
     section 上線與交付
     部署文件撰寫              :doc1, 2026-04-25, 3d
     專題報告製作與口頭報告    :doc2, after doc1, 5d
+
 ```
 
 ### 6.2 階段性里程碑
