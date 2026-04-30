@@ -19,3 +19,8 @@ backend/chroma_db/
 # OS
 Thumbs.db
 .DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
