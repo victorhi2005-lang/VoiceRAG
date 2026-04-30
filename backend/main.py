@@ -1,9 +1,12 @@
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel # 用來定義接收問題的資料格式
 import shutil
 import os
+import sqlite3
+import uuid
+from datetime import datetime
 from faster_whisper import WhisperModel
 import ollama
 
@@ -23,10 +26,48 @@ async def serve_frontend():
 UPLOAD_DIR = "audio_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# ==========================================
+# 系統初始化與資料庫設定
+# ==========================================
+def init_db():
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notebooks (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            icon TEXT,
+            updated_at TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sources (
+            id TEXT PRIMARY KEY,
+            notebook_id TEXT,
+            filename TEXT,
+            added_at TEXT,
+            FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notebook_id TEXT,
+            sender TEXT,
+            text TEXT,
+            created_at TEXT,
+            FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# 系統初始化區塊 
+init_db()
+
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = chroma_client.get_or_create_collection(name="mis_knowledge")
+
+def get_notebook_collection(notebook_id: str):
+    return chroma_client.get_or_create_collection(name=f"notebook_{notebook_id}")
 
 print("正在載入 Embedding 向量模型，請稍候...")
 embeddings_model = HuggingFaceEmbeddings(model_name="shibing624/text2vec-base-chinese")
@@ -35,11 +76,98 @@ print("正在載入本地端 Whisper 模型，請稍候...")
 model = WhisperModel("large-v3", device="cuda", compute_type="float16")
 print("[OK] 所有 AI 系統與資料庫載入完成！")
 
+# ==========================================
+# API 1：筆記本管理 (Notebook CRUD)
+# ==========================================
 
-# API 1：上傳音檔並寫入記憶庫 
+class NotebookUpdate(BaseModel):
+    name: str
+
+@app.get("/api/notebooks/")
+async def get_notebooks():
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, icon, updated_at FROM notebooks ORDER BY updated_at DESC")
+    notebooks = []
+    for row in cursor.fetchall():
+        nid = row[0]
+        cursor.execute("SELECT COUNT(*) FROM sources WHERE notebook_id=?", (nid,))
+        source_count = cursor.fetchone()[0]
+        notebooks.append({
+            "id": nid,
+            "name": row[1],
+            "icon": row[2],
+            "updated_at": row[3],
+            "source_count": source_count
+        })
+    conn.close()
+    return {"status": "success", "notebooks": notebooks}
+
+@app.post("/api/notebooks/")
+async def create_notebook():
+    nid = str(uuid.uuid4())
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    name = "未命名筆記本"
+    icon = "📓"
+    
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO notebooks (id, name, icon, updated_at) VALUES (?, ?, ?, ?)", (nid, name, icon, now))
+    conn.commit()
+    conn.close()
+    
+    # 預先建立 ChromaDB Collection
+    get_notebook_collection(nid)
+    return {"status": "success", "notebook": {"id": nid, "name": name, "icon": icon, "updated_at": now, "source_count": 0}}
+
+@app.put("/api/notebooks/{notebook_id}")
+async def update_notebook(notebook_id: str, data: NotebookUpdate):
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE notebooks SET name = ?, updated_at = ? WHERE id = ?", (data.name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), notebook_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+@app.get("/api/notebooks/{notebook_id}")
+async def get_notebook_details(notebook_id: str):
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    
+    # 取得來源清單
+    cursor.execute("SELECT id, filename, added_at FROM sources WHERE notebook_id = ? ORDER BY added_at ASC", (notebook_id,))
+    sources = [{"id": r[0], "filename": r[1], "added_at": r[2]} for r in cursor.fetchall()]
+    
+    # 取得對話紀錄
+    cursor.execute("SELECT sender, text, created_at FROM messages WHERE notebook_id = ? ORDER BY id ASC", (notebook_id,))
+    messages = [{"sender": r[0], "text": r[1], "created_at": r[2]} for r in cursor.fetchall()]
+    
+    conn.close()
+    return {"status": "success", "sources": sources, "messages": messages}
+
+@app.delete("/api/notebooks/{notebook_id}")
+async def delete_notebook(notebook_id: str):
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
+    conn.commit()
+    conn.close()
+    
+    # 從 ChromaDB 刪除 collection
+    try:
+        chroma_client.delete_collection(name=f"notebook_{notebook_id}")
+    except Exception:
+        pass
+        
+    return {"status": "success"}
+
+# ==========================================
+# API 2：上傳音檔並寫入記憶庫 
+# ==========================================
 
 @app.post("/upload-audio/")
-async def upload_audio(file: UploadFile = File(...)):
+async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -56,14 +184,24 @@ async def upload_audio(file: UploadFile = File(...)):
             return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
 
     try:
-        # 1. 將原始逐字稿切片並寫入向量資料庫（保留所有細節供日後問答）
+        # 1. 將原始逐字稿切片並寫入向量資料庫（寫入專屬的 Notebook Collection）
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", "。", "！", "？", "，", " "])
         chunks = text_splitter.split_text(transcript_text)
 
+        collection = get_notebook_collection(notebook_id)
         for i, chunk in enumerate(chunks):
             vector = embeddings_model.embed_query(chunk)
-            chunk_id = f"{file.filename}_chunk_{i}"
+            chunk_id = f"{file.filename}_chunk_{i}_{uuid.uuid4().hex[:6]}"
             collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}])
+            
+        # 更新 SQLite 紀錄
+        conn = sqlite3.connect("notebooks.db")
+        cursor = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO sources (id, notebook_id, filename, added_at) VALUES (?, ?, ?, ?)", (str(uuid.uuid4()), notebook_id, file.filename, now))
+        cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
+        conn.commit()
+        conn.close()
     except Exception as e:
         return {"status": "error", "message": f"寫入向量資料庫失敗: {str(e)}"}
 
@@ -83,6 +221,18 @@ async def upload_audio(file: UploadFile = File(...)):
     except Exception as e:
         return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
 
+    # 3. 將 AI 摘要存入對話紀錄
+    try:
+        conn = sqlite3.connect("notebooks.db")
+        cursor = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        formatted_result = f"**《{file.filename}》重點摘要**\n\n{structured_knowledge}"
+        cursor.execute("INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)", (notebook_id, 'AI', formatted_result, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        pass # 若儲存對話失敗不中斷流程
+
     return {
         "filename": file.filename, 
         "status": "success",
@@ -97,6 +247,7 @@ async def upload_audio(file: UploadFile = File(...)):
 
 # 定義接收前端問題的格式
 class QuestionRequest(BaseModel):
+    notebook_id: str
     question: str
 
 @app.post("/ask-question/")
@@ -105,7 +256,11 @@ async def ask_question(request: QuestionRequest):
         # 1. 將使用者的問題轉成數學向量
         query_vector = embeddings_model.embed_query(request.question)
         
-        # 2. 去 ChromaDB 尋找最相關的 5 段記憶 
+        # 2. 去 ChromaDB 指定的筆記本中尋找最相關的 5 段記憶 
+        collection = get_notebook_collection(request.notebook_id)
+        if collection.count() == 0:
+            return {"status": "error", "message": "此筆記本尚未上傳任何來源，請先上傳音檔。"}
+            
         results = collection.query(
             query_embeddings=[query_vector],
             n_results=5
@@ -137,6 +292,20 @@ async def ask_question(request: QuestionRequest):
         ai_answer = response['message']['content']
         
         # 5. 回傳答案與引用的資料來源 
+        
+        # 6. 將問答存入對話紀錄
+        try:
+            conn = sqlite3.connect("notebooks.db")
+            cursor = conn.cursor()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)", (request.notebook_id, 'User', request.question, now))
+            cursor.execute("INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)", (request.notebook_id, 'AI', ai_answer, now))
+            cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, request.notebook_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            pass
+
         return {
             "status": "success",
             "question": request.question,

@@ -1,107 +1,391 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VoiceRAG 知識庫系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
     <style>
-        /* Dark scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #1a1a1a; }
-        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
-        body { background-color: #131314; color: #e5e7eb; }
+        /* 深色滾動條 */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+
+        body {
+            background-color: #131314;
+            color: #e5e7eb;
+        }
+
+        /* 隱藏選單的樣式 */
+        .dropdown-content {
+            display: none;
+        }
+
+        .dropdown:hover .dropdown-content {
+            display: block;
+        }
     </style>
 </head>
-<body class="flex h-screen overflow-hidden font-sans">
 
-    <!-- Left Sidebar -->
-    <aside class="w-1/3 bg-[#1e1f22] border-r border-[#333] flex flex-col hidden md:flex shrink-0 m-3 mr-1 rounded-xl overflow-hidden shadow-lg">
-        <div class="p-4 border-b border-[#333] flex justify-between items-center">
-            <h1 class="text-sm font-semibold text-gray-200">來源</h1>
+<body class="flex h-screen overflow-hidden font-sans relative">
+
+    <!-- 筆記本導覽首頁 (Dashboard View) -->
+    <div id="dashboard-view" class="absolute inset-0 z-20 flex flex-col p-10 overflow-y-auto bg-[#131314]">
+        <div class="max-w-6xl mx-auto w-full">
+            <h1 class="text-xl font-semibold mb-8 text-gray-200">最近開啟的筆記本</h1>
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6" id="notebook-grid">
+
+                <!-- 建立新筆記本卡片 -->
+                <div onclick="createNotebook()"
+                    class="group flex flex-col items-center justify-center h-48 bg-transparent border-2 border-dashed border-[#444] rounded-2xl hover:border-gray-400 hover:bg-[#1a1b1e] cursor-pointer transition shadow-sm">
+                    <div
+                        class="w-12 h-12 rounded-full bg-[#333] group-hover:bg-[#444] flex items-center justify-center text-xl mb-3 transition">
+                        +</div>
+                    <span class="text-sm text-gray-300">建立新的筆記本</span>
+                </div>
+
+                <!-- 動態生成的筆記本卡片將安插於此 -->
+            </div>
         </div>
-        
-        <div class="p-4 flex-1 overflow-y-auto space-y-5">
-            <!-- Add Source Button -->
-            <label for="audioFile" class="flex items-center justify-center w-full py-2 border border-[#555] rounded-lg text-sm text-gray-300 hover:bg-[#333] hover:text-white cursor-pointer transition">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4 mr-2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-                新增來源
-            </label>
-            <input type="file" id="audioFile" accept="audio/*" class="hidden" onchange="uploadAudio()">
+    </div>
 
-            <!-- Sources List -->
-            <div class="space-y-2">
-                <div id="sourcesList" class="space-y-2">
-                    <!-- Dynamically added sources will go here -->
+    <!-- 工作區視圖 (Workspace View) -->
+    <div id="workspace-view" class="absolute inset-0 z-10 flex hidden bg-[#131314]">
+        <!-- 左側邊欄 (來源管理) -->
+        <aside
+            class="w-1/3 bg-[#1e1f22] border-r border-[#333] flex flex-col hidden md:flex shrink-0 m-3 mr-1 rounded-xl overflow-hidden shadow-lg">
+            <div class="p-4 border-b border-[#333] flex justify-between items-center">
+                <div class="flex items-center space-x-3">
+                    <button onclick="goBackToDashboard()" class="text-gray-400 hover:text-white transition" title="回首頁">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                            stroke="currentColor" class="w-5 h-5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
+                        </svg>
+                    </button>
+                    <h1 class="text-sm font-semibold text-gray-200 truncate max-w-[150px]" id="current-notebook-title">
+                        來源</h1>
                 </div>
             </div>
-        </div>
-    </aside>
 
-    <!-- Main Chat Area -->
-    <main class="flex-1 flex flex-col relative h-screen overflow-hidden m-3 ml-2 rounded-xl border border-[#333] bg-[#1e1f22] shadow-lg">
-        <!-- Header -->
-        <div class="p-4 flex justify-between items-center border-b border-[#333]">
-            <h2 class="text-sm font-semibold text-gray-200">對話</h2>
-        </div>
-
-        <!-- Chat History -->
-        <div id="chatHistory" class="flex-1 overflow-y-auto p-6 md:p-10 space-y-8 min-h-0">
-            <!-- Initial AI Message -->
-            <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
-                <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1">🤖</div>
-                <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm">你好！我是你的專屬 VoiceRAG 知識助理。
-請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
-            </div>
-        </div>
-
-        <!-- Input Area -->
-        <div class="w-full shrink-0 pt-2 pb-6 px-6 md:px-10">
-            <div class="max-w-4xl mx-auto relative flex items-end bg-[#2d2f34] rounded-2xl p-1.5 border border-[#444] focus-within:border-gray-400 transition-colors shadow-lg">
-                <textarea id="questionInput" rows="1" class="w-full max-h-40 bg-transparent border-none focus:ring-0 px-4 py-3 outline-none text-gray-200 text-sm resize-none placeholder-gray-500" placeholder="開始輸入..."></textarea>
-                
-                <button id="askBtn" onclick="askQuestion()" class="p-2.5 m-1 bg-[#3a3a3a] text-gray-300 rounded-xl hover:bg-[#555] hover:text-white transition duration-200 shrink-0">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
+            <div class="p-4 flex-1 overflow-y-auto space-y-5">
+                <!-- 新增來源按鈕 -->
+                <label for="audioFile"
+                    class="flex items-center justify-center w-full py-2 border border-[#555] rounded-lg text-sm text-gray-300 hover:bg-[#333] hover:text-white cursor-pointer transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                        stroke="currentColor" class="w-4 h-4 mr-2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                     </svg>
-                </button>
+                    新增來源
+                </label>
+                <input type="file" id="audioFile" accept="audio/*" class="hidden" onchange="uploadAudio()">
+
+                <!-- 來源清單 -->
+                <div class="space-y-2">
+                    <div id="sourcesList" class="space-y-2">
+                        <!-- 動態新增的來源會出現在這裡 -->
+                    </div>
+                </div>
             </div>
-            <div class="text-center text-xs text-gray-500 mt-3 flex justify-between max-w-4xl mx-auto px-2">
-                <span></span>
-                <span>VoiceRAG 提供的資訊未必正確，請查證回覆內容。</span>
+        </aside>
+
+        <!-- 主要對話區 -->
+        <main
+            class="flex-1 flex flex-col relative h-screen overflow-hidden m-3 ml-2 rounded-xl border border-[#333] bg-[#1e1f22] shadow-lg">
+            <!-- 標題列 -->
+            <div class="p-4 flex justify-between items-center border-b border-[#333]">
+                <h2 class="text-sm font-semibold text-gray-200">對話</h2>
+            </div>
+
+            <!-- 對話歷史紀錄 -->
+            <div id="chatHistory" class="flex-1 overflow-y-auto p-6 md:p-10 space-y-8 min-h-0">
+                <!-- 初始 AI 歡迎訊息 -->
+                <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
+                    <div
+                        class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1 shadow-md">
+                        🤖</div>
+                    <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm">你好！我是你的專屬
+                        VoiceRAG 知識助理。
+                        請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
+                </div>
+            </div>
+
+            <!-- 輸入區塊 -->
+            <div class="w-full shrink-0 pt-2 pb-6 px-6 md:px-10">
+                <div
+                    class="max-w-4xl mx-auto relative flex items-end bg-[#2d2f34] rounded-2xl p-1.5 border border-[#444] focus-within:border-gray-400 transition-colors shadow-lg">
+                    <textarea id="questionInput" rows="1"
+                        class="w-full max-h-40 bg-transparent border-none focus:ring-0 px-4 py-3 outline-none text-gray-200 text-sm resize-none placeholder-gray-500"
+                        placeholder="開始輸入..."></textarea>
+
+                    <button id="askBtn" onclick="askQuestion()"
+                        class="p-2.5 m-1 bg-[#3a3a3a] text-gray-300 rounded-xl hover:bg-[#555] hover:text-white transition duration-200 shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                            stroke="currentColor" class="w-5 h-5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="text-center text-xs text-gray-500 mt-3 flex justify-between max-w-4xl mx-auto px-2">
+                    <span></span>
+                    <span>VoiceRAG 提供的資訊未必正確，請查證回覆內容。</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 用於修改名稱的隱藏 Dialog (簡易版) -->
+    <div id="renameModal" class="fixed inset-0 z-50 flex items-center justify-center hidden bg-black bg-opacity-50">
+        <div class="bg-[#1e1f22] border border-[#333] rounded-xl p-6 w-96 shadow-2xl">
+            <h3 class="text-lg font-semibold text-gray-200 mb-4">重新命名筆記本</h3>
+            <input type="text" id="renameInput"
+                class="w-full bg-[#131314] border border-[#444] rounded-lg px-3 py-2 text-gray-200 focus:outline-none focus:border-gray-400 mb-4">
+            <div class="flex justify-end space-x-3">
+                <button onclick="closeRenameModal()"
+                    class="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
+                <button onclick="submitRename()"
+                    class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg">儲存</button>
             </div>
         </div>
-    </main>
+    </div>
 
     <script>
+        // 全域狀態：當前選擇的筆記本 ID
+        let currentNotebookId = null;
+        let renameTargetId = null;
+
+        // 頁面載入時，獲取筆記本列表
+        document.addEventListener('DOMContentLoaded', fetchNotebooks);
+
+        // 獲取並渲染筆記本列表
+        async function fetchNotebooks() {
+            try {
+                const res = await fetch('/api/notebooks/');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    renderNotebooks(data.notebooks);
+                }
+            } catch (err) {
+                console.error("無法載入筆記本", err);
+            }
+        }
+
+        // 渲染筆記本卡片
+        function renderNotebooks(notebooks) {
+            const grid = document.getElementById('notebook-grid');
+            // 保留第一個「新增」卡片，清除其餘的
+            grid.innerHTML = `
+                <div onclick="createNotebook()" class="group flex flex-col items-center justify-center h-48 bg-transparent border-2 border-dashed border-[#444] rounded-2xl hover:border-gray-400 hover:bg-[#1a1b1e] cursor-pointer transition shadow-sm">
+                    <div class="w-12 h-12 rounded-full bg-[#333] group-hover:bg-[#444] flex items-center justify-center text-xl mb-3 transition">+</div>
+                    <span class="text-sm text-gray-300">建立新的筆記本</span>
+                </div>
+            `;
+
+            notebooks.forEach(nb => {
+                const dateStr = nb.updated_at.split(' ')[0]; // 只取日期部分
+                const card = document.createElement('div');
+                card.className = "relative h-48 bg-[#222428] border border-[#333] rounded-2xl p-5 flex flex-col justify-between hover:bg-[#2a2c30] transition shadow-sm cursor-pointer group dropdown-container";
+                card.onclick = (e) => {
+                    // 避免點擊右上角選單時觸發進入筆記本
+                    if (!e.target.closest('.dropdown')) {
+                        openNotebook(nb.id, nb.name);
+                    }
+                };
+
+                card.innerHTML = `
+                    <div class="flex justify-between items-start">
+                        <div class="text-4xl">${nb.icon}</div>
+                        <!-- 右上角選項選單 -->
+                        <div class="dropdown relative">
+                            <button class="text-gray-400 hover:text-white p-1 rounded-full hover:bg-[#444]">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 18.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" /></svg>
+                            </button>
+                            <div class="dropdown-content absolute right-0 mt-1 w-32 bg-[#1e1f22] border border-[#333] rounded-lg shadow-xl z-30 py-1">
+                                <button onclick="openRenameModal('${nb.id}', '${nb.name}')" class="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white flex items-center">
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                                    編輯標題
+                                </button>
+                                <button onclick="deleteNotebook('${nb.id}')" class="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#333] hover:text-red-300 flex items-center">
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                    刪除
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <h3 class="text-lg font-semibold text-gray-200 truncate mb-1">${nb.name}</h3>
+                        <p class="text-xs text-gray-500">${dateStr} · ${nb.source_count} 個來源</p>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        // 建立新筆記本
+        async function createNotebook() {
+            try {
+                const res = await fetch('/api/notebooks/', { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    openNotebook(data.notebook.id, data.notebook.name);
+                }
+            } catch (err) {
+                console.error("建立筆記本失敗", err);
+            }
+        }
+
+        // 開啟特定筆記本（切換至工作區）
+        async function openNotebook(id, name) {
+            currentNotebookId = id;
+            document.getElementById('current-notebook-title').textContent = name;
+
+            // 清空來源列表與對話紀錄 
+            document.getElementById('sourcesList').innerHTML = '';
+            const chatHistory = document.getElementById('chatHistory');
+            chatHistory.innerHTML = '';
+
+            // 讀取該筆記本的歷史紀錄
+            try {
+                const res = await fetch(`/api/notebooks/${id}`);
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    // 渲染來源列表
+                    data.sources.forEach(source => {
+                        document.getElementById('sourcesList').innerHTML += `
+                            <div class="flex items-center justify-between text-sm text-gray-300 p-2 rounded hover:bg-[#333] transition cursor-pointer">
+                                <div class="flex items-center space-x-2 overflow-hidden">
+                                    <span class="text-blue-500 font-bold">▶</span>
+                                    <span class="truncate" title="${source.filename}">${source.filename}</span>
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    // 渲染對話紀錄
+                    if (data.messages && data.messages.length > 0) {
+                        data.messages.forEach(msg => {
+                            appendMessage(msg.sender, msg.text);
+                        });
+                    } else {
+                        // 如果沒有對話紀錄，顯示歡迎訊息
+                        chatHistory.innerHTML = `
+                            <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
+                                <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1 shadow-md">🤖</div>
+                                <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm">你好！我是你的專屬 VoiceRAG 知識助理。
+請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
+                            </div>
+                        `;
+                    }
+                }
+            } catch (err) {
+                console.error("讀取歷史紀錄失敗", err);
+            }
+
+            document.getElementById('dashboard-view').classList.add('hidden');
+            document.getElementById('workspace-view').classList.remove('hidden');
+        }
+
+        // 回到首頁
+        function goBackToDashboard() {
+            currentNotebookId = null;
+            document.getElementById('workspace-view').classList.add('hidden');
+            document.getElementById('dashboard-view').classList.remove('hidden');
+            fetchNotebooks(); // 重新整理列表以更新來源數量
+        }
+
+        // 刪除筆記本
+        async function deleteNotebook(id) {
+            if (!confirm("確定要刪除這個筆記本嗎？此操作無法還原。")) return;
+            try {
+                const res = await fetch(`/api/notebooks/${id}`, { method: 'DELETE' });
+                if (res.ok) fetchNotebooks();
+            } catch (err) {
+                console.error("刪除失敗", err);
+            }
+        }
+
+        // 修改名稱 Modal 邏輯
+        function openRenameModal(id, currentName) {
+            renameTargetId = id;
+            const input = document.getElementById('renameInput');
+            input.value = currentName;
+            document.getElementById('renameModal').classList.remove('hidden');
+            input.focus();
+        }
+
+        function closeRenameModal() {
+            renameTargetId = null;
+            document.getElementById('renameModal').classList.add('hidden');
+        }
+
+        async function submitRename() {
+            const newName = document.getElementById('renameInput').value.trim();
+            if (!newName || !renameTargetId) return;
+
+            try {
+                const res = await fetch(`/api/notebooks/${renameTargetId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                });
+                if (res.ok) {
+                    closeRenameModal();
+                    fetchNotebooks();
+                }
+            } catch (err) {
+                console.error("修改名稱失敗", err);
+            }
+        }
+
+        // ==========================================
+        // 以下為原本的工作區邏輯 (上傳音檔、問答)
+        // ==========================================
+
         // 自動調整輸入框高度與支援 Enter 送出
         const inputEl = document.getElementById('questionInput');
-        inputEl.addEventListener('keydown', function(e) {
+        inputEl.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 askQuestion();
             }
         });
 
-        inputEl.addEventListener("input", function() {
+        inputEl.addEventListener("input", function () {
             this.style.height = 'auto';
             this.style.height = (this.scrollHeight) + 'px';
         }, false);
 
         async function uploadAudio() {
+            if (!currentNotebookId) return;
             const fileInput = document.getElementById('audioFile');
             if (fileInput.files.length === 0) return;
 
             const file = fileInput.files[0];
             const sourcesList = document.getElementById('sourcesList');
-            
-            // Generate IDs
+
+            // 產生暫時的 ID
             const tempSourceId = 'source-' + Date.now();
             const loadingMsgId = 'msg-' + Date.now();
 
-            // Add loading state to sidebar
+            // 在左側欄顯示載入狀態
             const tempSourceHtml = `
                 <div id="${tempSourceId}" class="flex items-center justify-between text-sm text-gray-400 p-2 rounded hover:bg-[#333] transition animate-pulse">
                     <div class="flex items-center space-x-2 overflow-hidden">
@@ -112,18 +396,19 @@
             `;
             sourcesList.insertAdjacentHTML('beforeend', tempSourceHtml);
 
-            // Add loading message to chat
+            // 在對話框顯示載入訊息
             appendMessage('AI', '正在為您處理音檔《' + file.name + '》並萃取知識重點，請稍候...', loadingMsgId, true);
 
             const formData = new FormData();
             formData.append('file', file);
+            formData.append('notebook_id', currentNotebookId); // 傳送當前筆記本 ID
 
             try {
                 const response = await fetch('/upload-audio/', { method: 'POST', body: formData });
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    // Update sidebar with actual source
+                    // 更新左側欄為實際來源
                     document.getElementById(tempSourceId).outerHTML = `
                         <div class="flex items-center justify-between text-sm text-gray-300 p-2 rounded hover:bg-[#333] transition cursor-pointer">
                             <div class="flex items-center space-x-2 overflow-hidden">
@@ -132,8 +417,8 @@
                             </div>
                         </div>
                     `;
-                    
-                    // Remove loading message & show result in chat
+
+                    // 移除載入訊息並顯示 AI 重點摘要
                     document.getElementById(loadingMsgId).remove();
                     const formattedResult = `**《${file.name}》重點摘要**\n\n${data.structured_knowledge}`;
                     appendMessage('AI', formattedResult);
@@ -147,12 +432,13 @@
                 document.getElementById(loadingMsgId).remove();
                 appendMessage('AI', '❌ 網路連線異常，請檢查伺服器狀態。');
             } finally {
-                // Reset file input
+                // 重置檔案輸入框
                 fileInput.value = '';
             }
         }
 
         async function askQuestion() {
+            if (!currentNotebookId) return;
             const question = inputEl.value.trim();
             const btn = document.getElementById('askBtn');
 
@@ -160,16 +446,16 @@
 
             // 1. 將使用者的問題加入畫面對話中
             appendMessage('User', question);
-            
+
             // 清空輸入框並恢復預設高度
             inputEl.value = '';
             inputEl.style.height = 'auto';
-            
+
             // 鎖定狀態
             btn.disabled = true;
             btn.classList.add('opacity-40', 'cursor-not-allowed');
             inputEl.disabled = true;
-            
+
             // 2. 顯示 AI 正在思考的狀態
             const loadingId = 'loading-' + Date.now();
             appendMessage('AI', '思考中...', loadingId, true);
@@ -178,7 +464,10 @@
                 const response = await fetch('/ask-question/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: question })
+                    body: JSON.stringify({
+                        question: question,
+                        notebook_id: currentNotebookId // 傳送當前筆記本 ID
+                    })
                 });
                 const data = await response.json();
 
@@ -214,12 +503,12 @@
             if (id) div.id = id;
 
             if (sender === 'User') {
-                // User message: Dark bubble aligned right
+                // 使用者訊息：深色泡泡靠右
                 div.innerHTML = `
                     <div class="bg-[#333] px-5 py-3.5 rounded-3xl text-gray-200 whitespace-pre-wrap max-w-2xl ml-auto text-sm border border-[#444] shadow-md">${text}</div>
                 `;
             } else {
-                // AI message: Align left with icon
+                // AI 訊息：靠左帶頭像
                 const pulseClass = animate ? 'animate-pulse' : '';
                 div.innerHTML = `
                     <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1 shadow-md">🤖</div>
@@ -228,8 +517,8 @@
             }
 
             chatHistory.appendChild(div);
-            
-            // Scroll to bottom
+
+            // 自動滾動到底部
             chatHistory.scrollTo({
                 top: chatHistory.scrollHeight,
                 behavior: 'smooth'
@@ -237,4 +526,5 @@
         }
     </script>
 </body>
+
 </html>
