@@ -13,6 +13,8 @@ import ollama
 import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from FlagEmbedding import BGEM3FlagModel, FlagReranker
+from rank_bm25 import BM25Okapi
+import jieba
 
 app = FastAPI()
 # 告訴 FastAPI 網頁檔案放在 static 資料夾裡
@@ -78,6 +80,44 @@ reranker = FlagReranker('BAAI/bge-reranker-v2-m3', use_fp16=True)
 print("正在載入本地端 Whisper 模型，請稍候...")
 model = WhisperModel("large-v3", device="cuda", compute_type="float16")
 print("[OK] 所有 AI 系統與資料庫載入完成！")
+
+# ==========================================
+# BM25 關鍵字索引管理 (Phase 4)
+# ==========================================
+# 每個筆記本維護一個狨立的 BM25 索引，存在記憶體中
+bm25_indices = {}   # {notebook_id: BM25Okapi 實例}
+bm25_docs = {}      # {notebook_id: [原始文件列表]}
+
+def tokenize_chinese(text):
+    """jieba 中文分詞，過濾空白"""
+    return [w for w in jieba.cut(text) if w.strip()]
+
+def rebuild_bm25_index(notebook_id):
+    """從 ChromaDB 重建指定筆記本的 BM25 索引"""
+    try:
+        collection = get_notebook_collection(notebook_id)
+        if collection.count() == 0:
+            return
+        all_data = collection.get()
+        docs = all_data['documents']
+        bm25_docs[notebook_id] = docs
+        tokenized = [tokenize_chinese(doc) for doc in docs]
+        bm25_indices[notebook_id] = BM25Okapi(tokenized)
+    except Exception:
+        pass
+
+def rrf_fusion(dense_docs, bm25_result_docs, k=60):
+    """使用 Reciprocal Rank Fusion (RRF) 融合兩組排名結果"""
+    scores = {}
+    # Dense 排名
+    for rank, doc in enumerate(dense_docs):
+        scores[doc] = scores.get(doc, 0) + 1.0 / (k + rank + 1)
+    # BM25 排名
+    for rank, doc in enumerate(bm25_result_docs):
+        scores[doc] = scores.get(doc, 0) + 1.0 / (k + rank + 1)
+    # 依合併分數排序
+    sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return [doc for doc, _ in sorted_docs]
 
 # ==========================================
 # API 1：筆記本管理 (Notebook CRUD)
@@ -162,6 +202,10 @@ async def delete_notebook(notebook_id: str):
         chroma_client.delete_collection(name=f"notebook_{notebook_id}")
     except Exception:
         pass
+    
+    # 清除 BM25 索引
+    bm25_indices.pop(notebook_id, None)
+    bm25_docs.pop(notebook_id, None)
         
     return {"status": "success"}
 
@@ -196,6 +240,9 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
             vector = embeddings_model.encode([chunk])['dense_vecs'][0].tolist()
             chunk_id = f"{file.filename}_chunk_{i}_{uuid.uuid4().hex[:6]}"
             collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}])
+        
+        # 同步重建該筆記本的 BM25 索引
+        rebuild_bm25_index(notebook_id)
             
         # 更新 SQLite 紀錄
         conn = sqlite3.connect("notebooks.db")
@@ -259,32 +306,51 @@ async def ask_question(request: QuestionRequest):
         # 1. 將使用者的問題轉成數學向量
         query_vector = embeddings_model.encode([request.question])['dense_vecs'][0].tolist()
         
-        # 2. 去 ChromaDB 指定的筆記本中先選出 Top-20 候選片段
+        # 2. 混合檢索：Dense 向量檢索 + BM25 關鍵字檢索
         collection = get_notebook_collection(request.notebook_id)
         if collection.count() == 0:
             return {"status": "error", "message": "此筆記本尚未上傳任何來源，請先上傳音檔。"}
         
-        # 根據知識庫大小動態調整採樣數量，最多 20 筆
         total_docs = collection.count()
         n_candidates = min(20, total_docs)
-            
-        results = collection.query(
+        
+        # 2a. Dense 向量檢索 (Top-20)
+        dense_results = collection.query(
             query_embeddings=[query_vector],
             n_results=n_candidates
         )
+        dense_docs = dense_results['documents'][0]
         
-        candidates = results['documents'][0]
+        # 2b. BM25 關鍵字檢索 (Top-20)
+        bm25_top_docs = []
+        nb_id = request.notebook_id
+        if nb_id not in bm25_indices:
+            rebuild_bm25_index(nb_id)
         
-        # 3. 用 Reranker 對候選片段進行二次精排，取出最相關的 Top-5
-        pairs = [[request.question, doc] for doc in candidates]
+        if nb_id in bm25_indices and bm25_indices[nb_id] is not None:
+            query_tokens = tokenize_chinese(request.question)
+            bm25_scores = bm25_indices[nb_id].get_scores(query_tokens)
+            top_n = min(n_candidates, len(bm25_scores))
+            top_indices = bm25_scores.argsort()[-top_n:][::-1]
+            bm25_top_docs = [bm25_docs[nb_id][i] for i in top_indices]
+        
+        # 3. 使用 RRF (Reciprocal Rank Fusion) 融合兩組結果
+        if bm25_top_docs:
+            fused_candidates = rrf_fusion(dense_docs, bm25_top_docs)
+        else:
+            fused_candidates = dense_docs
+        
+        # 取前 20 名送入 Reranker
+        fused_candidates = fused_candidates[:20]
+        
+        # 4. 用 Reranker 對融合後的候選片段進行二次精排，取出 Top-5
+        pairs = [[request.question, doc] for doc in fused_candidates]
         scores = reranker.compute_score(pairs)
         
-        # 確保 scores 是 list 格式 (單筆結果可能回傳 float)
         if isinstance(scores, (int, float)):
             scores = [scores]
         
-        # 按分數排序，取前 5 名
-        ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)[:5]
+        ranked = sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True)[:5]
         top_documents = [doc for _, doc in ranked]
         retrieved_context = "\n\n".join(top_documents)
         
