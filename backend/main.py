@@ -12,7 +12,7 @@ import ollama
 
 import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from FlagEmbedding import BGEM3FlagModel, FlagReranker
 
 app = FastAPI()
 # 告訴 FastAPI 網頁檔案放在 static 資料夾裡
@@ -69,8 +69,11 @@ chroma_client = chromadb.PersistentClient(path="./chroma_db")
 def get_notebook_collection(notebook_id: str):
     return chroma_client.get_or_create_collection(name=f"notebook_{notebook_id}")
 
-print("正在載入 Embedding 向量模型，請稍候...")
-embeddings_model = HuggingFaceEmbeddings(model_name="shibing624/text2vec-base-chinese")
+print("正在載入 Embedding 向量模型 (BAAI/bge-m3)，請稍候...")
+embeddings_model = BGEM3FlagModel('BAAI/bge-m3', use_fp16=True)
+
+print("正在載入 Reranker 精排模型 (BAAI/bge-reranker-v2-m3)，請稍候...")
+reranker = FlagReranker('BAAI/bge-reranker-v2-m3', use_fp16=True)
 
 print("正在載入本地端 Whisper 模型，請稍候...")
 model = WhisperModel("large-v3", device="cuda", compute_type="float16")
@@ -190,7 +193,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
 
         collection = get_notebook_collection(notebook_id)
         for i, chunk in enumerate(chunks):
-            vector = embeddings_model.embed_query(chunk)
+            vector = embeddings_model.encode([chunk])['dense_vecs'][0].tolist()
             chunk_id = f"{file.filename}_chunk_{i}_{uuid.uuid4().hex[:6]}"
             collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}])
             
@@ -216,7 +219,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         
         語音逐字稿內容：\n{transcript_text}
         """
-        response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': prompt}])
+        response = ollama.chat(model='qwen3:30b-a3b', messages=[{'role': 'user', 'content': prompt + '\n/no_think'}])
         structured_knowledge = response['message']['content']
     except Exception as e:
         return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
@@ -254,22 +257,38 @@ class QuestionRequest(BaseModel):
 async def ask_question(request: QuestionRequest):
     try:
         # 1. 將使用者的問題轉成數學向量
-        query_vector = embeddings_model.embed_query(request.question)
+        query_vector = embeddings_model.encode([request.question])['dense_vecs'][0].tolist()
         
-        # 2. 去 ChromaDB 指定的筆記本中尋找最相關的 5 段記憶 
+        # 2. 去 ChromaDB 指定的筆記本中先選出 Top-20 候選片段
         collection = get_notebook_collection(request.notebook_id)
         if collection.count() == 0:
             return {"status": "error", "message": "此筆記本尚未上傳任何來源，請先上傳音檔。"}
+        
+        # 根據知識庫大小動態調整採樣數量，最多 20 筆
+        total_docs = collection.count()
+        n_candidates = min(20, total_docs)
             
         results = collection.query(
             query_embeddings=[query_vector],
-            n_results=5
+            n_results=n_candidates
         )
         
-        # 把找到的記憶片段組合起來
-        retrieved_context = "\n\n".join(results['documents'][0])
+        candidates = results['documents'][0]
         
-        # 3.Prompt強迫 AI 只能有根據回答
+        # 3. 用 Reranker 對候選片段進行二次精排，取出最相關的 Top-5
+        pairs = [[request.question, doc] for doc in candidates]
+        scores = reranker.compute_score(pairs)
+        
+        # 確保 scores 是 list 格式 (單筆結果可能回傳 float)
+        if isinstance(scores, (int, float)):
+            scores = [scores]
+        
+        # 按分數排序，取前 5 名
+        ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)[:5]
+        top_documents = [doc for _, doc in ranked]
+        retrieved_context = "\n\n".join(top_documents)
+        
+        # 4. Prompt 強迫 AI 只能有根據回答
         rag_prompt = f"""
         你現在是一個嚴格且專業的「知識庫檢索助理」。
         請你【完全且只能】依據下方的【參考資料】來回答使用者的問題。
@@ -287,11 +306,9 @@ async def ask_question(request: QuestionRequest):
         {request.question}
         """
         
-        # 4. 呼叫qwen回答
-        response = ollama.chat(model='qwen2.5', messages=[{'role': 'user', 'content': rag_prompt}])
+        # 5. 呼叫 Qwen3-30B-A3B 回答
+        response = ollama.chat(model='qwen3:30b-a3b', messages=[{'role': 'user', 'content': rag_prompt + '\n/no_think'}])
         ai_answer = response['message']['content']
-        
-        # 5. 回傳答案與引用的資料來源 
         
         # 6. 將問答存入對話紀錄
         try:
@@ -310,7 +327,7 @@ async def ask_question(request: QuestionRequest):
             "status": "success",
             "question": request.question,
             "answer": ai_answer,
-            "reference_sources": results['documents'][0] # 附上找出來的 5 段小抄
+            "reference_sources": top_documents # 附上經過精排後的 Top-5 參考資料
         }
         
     except Exception as e:
