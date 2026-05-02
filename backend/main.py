@@ -8,7 +8,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel, BatchedInferencePipeline
 import ollama
 
 import chromadb
@@ -76,13 +76,14 @@ def get_notebook_collection(notebook_id: str):
     return chroma_client.get_or_create_collection(name=f"notebook_{notebook_id}")
 
 print("正在載入 Embedding 向量模型 (BAAI/bge-m3)，請稍候...", flush=True)
-embeddings_model = SentenceTransformer('BAAI/bge-m3', device='cuda')
+embeddings_model = SentenceTransformer('BAAI/bge-m3', device='cuda', model_kwargs={'torch_dtype': torch.float16})
 
 print("正在載入 Reranker 精排模型 (BAAI/bge-reranker-v2-m3)，請稍候...", flush=True)
-reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', device='cuda')
+reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', device='cuda', model_kwargs={'torch_dtype': torch.float16})
 
 print("正在載入本地端 Whisper 模型 (large-v3-turbo)，請稍候...", flush=True)
-model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
+base_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
+model = BatchedInferencePipeline(model=base_model)
 print("[OK] 所有 AI 系統與資料庫載入完成！", flush=True)
 
 # ==========================================
@@ -311,7 +312,8 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
             beam_size=5,
             language="zh",
             initial_prompt="這是一段繁體中文的台灣口音逐字稿：",
-            vad_filter=True  # 啟用 VAD 過濾靜音段，減少 VRAM 峰值
+            vad_filter=True,  # 啟用 VAD 過濾靜音段，減少 VRAM 峰值
+            batch_size=16     # 開啟 16 線程批次推論，徹底榨乾 RTX 5080 效能
         )
         transcript_text = "".join([segment.text for segment in segments])
         # 釋放 Whisper 推論時佔用的 VRAM
