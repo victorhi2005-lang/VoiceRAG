@@ -7,14 +7,17 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from faster_whisper import WhisperModel
 import ollama
 
 import chromadb
+import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from FlagEmbedding import BGEM3FlagModel, FlagReranker
 from rank_bm25 import BM25Okapi
 import jieba
+import numpy as np
+import re
 
 app = FastAPI()
 # 告訴 FastAPI 網頁檔案放在 static 資料夾裡
@@ -71,20 +74,20 @@ chroma_client = chromadb.PersistentClient(path="./chroma_db")
 def get_notebook_collection(notebook_id: str):
     return chroma_client.get_or_create_collection(name=f"notebook_{notebook_id}")
 
-print("正在載入 Embedding 向量模型 (BAAI/bge-m3)，請稍候...")
-embeddings_model = BGEM3FlagModel('BAAI/bge-m3', use_fp16=True)
+print("正在載入 Embedding 向量模型 (BAAI/bge-m3)，請稍候...", flush=True)
+embeddings_model = SentenceTransformer('BAAI/bge-m3', device='cuda')
 
-print("正在載入 Reranker 精排模型 (BAAI/bge-reranker-v2-m3)，請稍候...")
-reranker = FlagReranker('BAAI/bge-reranker-v2-m3', use_fp16=True)
+print("正在載入 Reranker 精排模型 (BAAI/bge-reranker-v2-m3)，請稍候...", flush=True)
+reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', device='cuda')
 
-print("正在載入本地端 Whisper 模型 (large-v3-turbo)，請稍候...")
+print("正在載入本地端 Whisper 模型 (large-v3-turbo)，請稍候...", flush=True)
 model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
-print("[OK] 所有 AI 系統與資料庫載入完成！")
+print("[OK] 所有 AI 系統與資料庫載入完成！", flush=True)
 
 # ==========================================
 # BM25 關鍵字索引管理
 # ==========================================
-# 每個筆記本維護一個狨立的 BM25 索引，存在記憶體中
+# 每個筆記本維護一個獨立的 BM25 索引，存在記憶體中
 bm25_indices = {}   # {notebook_id: BM25Okapi 實例}
 bm25_docs = {}      # {notebook_id: [原始文件列表]}
 
@@ -118,6 +121,80 @@ def rrf_fusion(dense_docs, bm25_result_docs, k=60):
     # 依合併分數排序
     sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in sorted_docs]
+
+# ==========================================
+# 語意切分 (Semantic Chunking)
+# ==========================================
+def split_sentences(text):
+    """將中文文本按句子分割"""
+    # 按中文標點切分，保留標點
+    sentences = re.split(r'(?<=[\u3002\uff01\uff1f\uff1b\u000a])', text)
+    # 過濾空白和過短的片段
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 5]
+    return sentences
+
+def semantic_chunk(text, embeddings_model, similarity_threshold=0.65, max_chunk_size=600, min_chunk_size=80):
+    """
+    基於語意相似度的智慧切分。
+    將相鄰且語意相近的句子聚合成一個 chunk，在語意跳躍處切斷。
+    
+    參數：
+        text: 原始文字
+        embeddings_model: BGE-M3 向量模型
+        similarity_threshold: 語意相似度門檻，低於此值則切斷 (0~1)
+        max_chunk_size: 單個 chunk 最大字數
+        min_chunk_size: 單個 chunk 最小字數
+    """
+    sentences = split_sentences(text)
+    
+    # 句子太少時直接回傳
+    if len(sentences) <= 2:
+        return [text] if text.strip() else []
+    
+    # 計算每個句子的向量
+    sentence_embeddings = embeddings_model.encode(sentences)
+    
+    # 計算相鄰句子間的餘弦相似度
+    similarities = []
+    for i in range(len(sentence_embeddings) - 1):
+        vec_a = sentence_embeddings[i]
+        vec_b = sentence_embeddings[i + 1]
+        cos_sim = np.dot(vec_a, vec_b) / (np.linalg.norm(vec_a) * np.linalg.norm(vec_b))
+        similarities.append(float(cos_sim))
+    
+    # 根據相似度決定切割點
+    chunks = []
+    current_chunk = sentences[0]
+    
+    for i in range(len(similarities)):
+        next_sentence = sentences[i + 1]
+        
+        # 判斷是否應該在此處切斷
+        should_split = False
+        
+        # 條件 1：語意相似度低於門檻，代表話題轉換
+        if similarities[i] < similarity_threshold:
+            should_split = True
+        
+        # 條件 2：累積長度超過最大上限，強制切斷
+        if len(current_chunk) + len(next_sentence) > max_chunk_size:
+            should_split = True
+        
+        if should_split and len(current_chunk) >= min_chunk_size:
+            chunks.append(current_chunk.strip())
+            current_chunk = next_sentence
+        else:
+            current_chunk += next_sentence
+    
+    # 最後一個 chunk
+    if current_chunk.strip():
+        # 如果最後一段太短，併入前一個
+        if len(current_chunk.strip()) < min_chunk_size and chunks:
+            chunks[-1] += current_chunk.strip()
+        else:
+            chunks.append(current_chunk.strip())
+    
+    return chunks if chunks else [text]
 
 # ==========================================
 # API 1：筆記本管理 (Notebook CRUD)
@@ -231,13 +308,17 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
             return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
 
     try:
-        # 1. 將原始逐字稿切片並寫入向量資料庫（寫入專屬的 Notebook Collection）
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", "。", "！", "？", "，", " "])
-        chunks = text_splitter.split_text(transcript_text)
+        # 1. 將原始逐字稿進行語意切分並寫入向量資料庫
+        # 優先使用語意切分，當文字太短時 fallback 到固定切分
+        if len(transcript_text) > 200:
+            chunks = semantic_chunk(transcript_text, embeddings_model, similarity_threshold=0.65, max_chunk_size=600, min_chunk_size=80)
+        else:
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", "。", "！", "？", "，", " "])
+            chunks = text_splitter.split_text(transcript_text)
 
         collection = get_notebook_collection(notebook_id)
         for i, chunk in enumerate(chunks):
-            vector = embeddings_model.encode([chunk])['dense_vecs'][0].tolist()
+            vector = embeddings_model.encode(chunk).tolist()
             chunk_id = f"{file.filename}_chunk_{i}_{uuid.uuid4().hex[:6]}"
             collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}])
         
@@ -321,7 +402,7 @@ class QuestionRequest(BaseModel):
 async def ask_question(request: QuestionRequest):
     try:
         # 1. 將使用者的問題轉成數學向量
-        query_vector = embeddings_model.encode([request.question])['dense_vecs'][0].tolist()
+        query_vector = embeddings_model.encode(request.question).tolist()
         
         # 2. 混合檢索：Dense 向量檢索 + BM25 關鍵字檢索
         collection = get_notebook_collection(request.notebook_id)
@@ -369,7 +450,7 @@ async def ask_question(request: QuestionRequest):
         
         # 4. 用 Reranker 對融合後的候選片段進行二次精排，取出 Top-5
         pairs = [[request.question, doc] for doc in fused_candidates]
-        scores = reranker.compute_score(pairs)
+        scores = reranker.predict(pairs)
         
         if isinstance(scores, (int, float)):
             scores = [scores]
