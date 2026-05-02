@@ -12,12 +12,13 @@ from faster_whisper import WhisperModel
 import ollama
 
 import chromadb
-import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Okapi
 import jieba
 import numpy as np
 import re
+import torch
+import gc
 
 app = FastAPI()
 # 告訴 FastAPI 網頁檔案放在 static 資料夾裡
@@ -297,13 +298,25 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         shutil.copyfileobj(file.file, buffer)
         
     try:
+        # 暫時卸載 Ollama 模型，騰出 GPU VRAM 給 Whisper 全速處理
+        try:
+            ollama.generate(model='qwen3:14b', prompt='', keep_alive=0)
+            torch.cuda.empty_cache()
+            gc.collect()
+        except Exception:
+            pass  # 若 Ollama 未載入也不影響流程
+
         segments, info = model.transcribe(
             file_path,
             beam_size=5,
             language="zh",
-            initial_prompt="這是一段繁體中文的台灣口音逐字稿："
+            initial_prompt="這是一段繁體中文的台灣口音逐字稿：",
+            vad_filter=True  # 啟用 VAD 過濾靜音段，減少 VRAM 峰值
         )
         transcript_text = "".join([segment.text for segment in segments])
+        # 釋放 Whisper 推論時佔用的 VRAM
+        torch.cuda.empty_cache()
+        gc.collect()
     except Exception as e:
             return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
 
@@ -335,6 +348,9 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         conn.close()
     except Exception as e:
         return {"status": "error", "message": f"寫入向量資料庫失敗: {str(e)}"}
+    finally:
+        # 釋放 Embedding 過程中的暫存記憶體
+        gc.collect()
 
     try:
         # 2. 用 AI 針對完整訊息進行分析，產生整體重點摘要供前端顯示
@@ -347,7 +363,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         
         語音逐字稿內容：\n{transcript_text}
         """
-        response = ollama.chat(model='qwen3:30b-a3b', messages=[{'role': 'user', 'content': prompt + '\n/no_think'}])
+        response = ollama.chat(model='qwen3:14b', messages=[{'role': 'user', 'content': prompt + '\n/no_think'}])
         structured_knowledge = response['message']['content']
     except Exception as e:
         return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
@@ -492,8 +508,8 @@ async def ask_question(request: QuestionRequest):
         rag_prompt += f"\n\n【參考資料】：\n{retrieved_context}"
         rag_prompt += f"\n\n【使用者的問題】：\n{request.question}"
         
-        # 7. 呼叫 Qwen3-30B-A3B 回答
-        response = ollama.chat(model='qwen3:30b-a3b', messages=[{'role': 'user', 'content': rag_prompt + '\n/no_think'}])
+        # 7. 呼叫 Qwen3-14B 回答
+        response = ollama.chat(model='qwen3:14b', messages=[{'role': 'user', 'content': rag_prompt + '\n/no_think'}])
         ai_answer = response['message']['content']
         
         # 8. 將問答存入對話紀錄

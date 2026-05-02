@@ -75,7 +75,8 @@
                                 d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
                         </svg>
                     </button>
-                    <h1 class="text-base font-semibold text-gray-200 truncate max-w-[150px]" id="current-notebook-title">
+                    <h1 class="text-base font-semibold text-gray-200 truncate max-w-[150px]"
+                        id="current-notebook-title">
                         來源</h1>
                 </div>
             </div>
@@ -102,8 +103,11 @@
         </aside>
 
         <!-- 拖曳調整寬度分隔線 -->
-        <div id="resizer" class="w-1.5 cursor-col-resize hover:bg-gray-600 active:bg-blue-500 mt-3 mb-0 transition-colors z-20 flex-shrink-0 group flex justify-center items-center">
-            <div class="h-10 w-1 rounded-full bg-gray-600 group-hover:bg-blue-400 transition-colors opacity-50 group-hover:opacity-100"></div>
+        <div id="resizer"
+            class="w-1.5 cursor-col-resize hover:bg-gray-600 active:bg-blue-500 mt-3 mb-0 transition-colors z-20 flex-shrink-0 group flex justify-center items-center">
+            <div
+                class="h-10 w-1 rounded-full bg-gray-600 group-hover:bg-blue-400 transition-colors opacity-50 group-hover:opacity-100">
+            </div>
         </div>
 
         <!-- 主要對話區 -->
@@ -242,18 +246,18 @@
         // 切換選項下拉選單
         function toggleDropdown(event, id) {
             event.stopPropagation(); // 避免觸發進入筆記本
-            
+
             // 先關閉所有其他的 dropdown
             document.querySelectorAll('.dropdown-content').forEach(el => {
                 if (el.id !== id) el.style.display = 'none';
             });
-            
+
             const dropdown = document.getElementById(id);
             dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
         }
 
         // 點擊畫面其他地方時關閉所有下拉選單
-        document.addEventListener('click', function(event) {
+        document.addEventListener('click', function (event) {
             if (!event.target.closest('.dropdown')) {
                 document.querySelectorAll('.dropdown-content').forEach(el => {
                     el.style.display = 'none';
@@ -552,13 +556,13 @@
         const sidebar = document.getElementById('sidebar');
         let isResizing = false;
 
-        resizer.addEventListener('mousedown', function(e) {
+        resizer.addEventListener('mousedown', function (e) {
             isResizing = true;
             document.body.style.cursor = 'col-resize';
             document.body.style.userSelect = 'none';
         });
 
-        document.addEventListener('mousemove', function(e) {
+        document.addEventListener('mousemove', function (e) {
             if (!isResizing) return;
             let newWidth = e.clientX;
             // 限制最小寬度 200px，最大寬度 70% 畫面寬
@@ -568,7 +572,7 @@
             sidebar.style.width = newWidth + 'px';
         });
 
-        document.addEventListener('mouseup', function(e) {
+        document.addEventListener('mouseup', function (e) {
             if (isResizing) {
                 isResizing = false;
                 document.body.style.cursor = '';
