@@ -77,12 +77,12 @@ embeddings_model = BGEM3FlagModel('BAAI/bge-m3', use_fp16=True)
 print("正在載入 Reranker 精排模型 (BAAI/bge-reranker-v2-m3)，請稍候...")
 reranker = FlagReranker('BAAI/bge-reranker-v2-m3', use_fp16=True)
 
-print("正在載入本地端 Whisper 模型，請稍候...")
-model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+print("正在載入本地端 Whisper 模型 (large-v3-turbo)，請稍候...")
+model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
 print("[OK] 所有 AI 系統與資料庫載入完成！")
 
 # ==========================================
-# BM25 關鍵字索引管理 (Phase 4)
+# BM25 關鍵字索引管理
 # ==========================================
 # 每個筆記本維護一個狨立的 BM25 索引，存在記憶體中
 bm25_indices = {}   # {notebook_id: BM25Okapi 實例}
@@ -294,6 +294,23 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
 
 # API 2：AI 知識問答端點
 
+def get_recent_messages(notebook_id, limit=6):
+    """讀取指定筆記本最近 N 筆對話紀錄，用於多輪對話記憶"""
+    try:
+        conn = sqlite3.connect("notebooks.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT sender, text FROM messages WHERE notebook_id = ? ORDER BY id DESC LIMIT ?",
+            (notebook_id, limit)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        # 反轉為時間正序 (最舊的在前面)
+        rows.reverse()
+        return [{"sender": r[0], "text": r[1]} for r in rows]
+    except Exception:
+        return []
+
 
 # 定義接收前端問題的格式
 class QuestionRequest(BaseModel):
@@ -314,12 +331,19 @@ async def ask_question(request: QuestionRequest):
         total_docs = collection.count()
         n_candidates = min(20, total_docs)
         
-        # 2a. Dense 向量檢索 (Top-20)
+        # 2a. Dense 向量檢索 (Top-20)，同時擈取 metadata 用於來源追蹤
         dense_results = collection.query(
             query_embeddings=[query_vector],
-            n_results=n_candidates
+            n_results=n_candidates,
+            include=["documents", "metadatas"]
         )
         dense_docs = dense_results['documents'][0]
+        dense_metas = dense_results['metadatas'][0]
+        # 建立文件 → 來源檔名的對照表
+        doc_source_map = {}
+        for doc, meta in zip(dense_docs, dense_metas):
+            if meta and 'source' in meta:
+                doc_source_map[doc] = meta['source']
         
         # 2b. BM25 關鍵字檢索 (Top-20)
         bm25_top_docs = []
@@ -354,29 +378,44 @@ async def ask_question(request: QuestionRequest):
         top_documents = [doc for _, doc in ranked]
         retrieved_context = "\n\n".join(top_documents)
         
-        # 4. Prompt 強迫 AI 只能有根據回答
-        rag_prompt = f"""
-        你現在是一個嚴格且專業的「知識庫檢索助理」。
-        請你【完全且只能】依據下方的【參考資料】來回答使用者的問題。
-
-        ⚠️ 絕對遵守以下四條規則：
-        1.【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字！
-        2. 如果【參考資料】中有答案，請用條理清晰、分點說明的方式（繁體中文）回答。
-        3. 如果【參考資料】的內容無法完全回答問題，請誠實回答：「根據目前資料庫的錄音紀錄，並未提及此資訊」，【絕對不可以】使用你自身的常識來腦補或編造答案。
-        4. 回答完畢後，請在最後簡述你主要是參考了哪幾段資料。
-
-        【參考資料】：
-        {retrieved_context}
-
-        【使用者的問題】：
-        {request.question}
-        """
+        # 彙整 Top-5 的來源檔名
+        source_files = list(set(doc_source_map.get(doc, "未知來源") for doc in top_documents))
+        source_info = "、".join(source_files)
         
-        # 5. 呼叫 Qwen3-30B-A3B 回答
+        # 5. 讀取最近對話紀錄，建構多輪對話脈絡
+        history = get_recent_messages(request.notebook_id, limit=6)
+        history_text = ""
+        if history:
+            history_lines = []
+            for msg in history:
+                role = "使用者" if msg['sender'] == 'User' else "AI 助理"
+                # 截斷過長的歷史訊息以節省 Token
+                text = msg['text'][:300] + "..." if len(msg['text']) > 300 else msg['text']
+                history_lines.append(f"{role}：{text}")
+            history_text = "\n".join(history_lines)
+        
+        # 6. 組裝完整的 RAG Prompt（含對話歷史 + 參考資料 + 來源標註）
+        rag_prompt = f"""你現在是一個嚴格且專業的「知識庫檢索助理」。
+請你【完全且只能】依據下方的【參考資料】來回答使用者的問題。
+
+⚠️ 絕對遵守以下規則：
+1.【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字！
+2. 如果【參考資料】中有答案，請用條理清晰、分點說明的方式回答。
+3. 如果【參考資料】無法回答問題，請誠實回答：「根據目前資料庫的錄音紀錄，並未提及此資訊」，【絕對不可以】編造答案。
+4. 回答時請注明參考來源檔案：{source_info}。
+5. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。"""
+        
+        if history_text:
+            rag_prompt += f"\n\n【歷史對話】：\n{history_text}"
+        
+        rag_prompt += f"\n\n【參考資料】：\n{retrieved_context}"
+        rag_prompt += f"\n\n【使用者的問題】：\n{request.question}"
+        
+        # 7. 呼叫 Qwen3-30B-A3B 回答
         response = ollama.chat(model='qwen3:30b-a3b', messages=[{'role': 'user', 'content': rag_prompt + '\n/no_think'}])
         ai_answer = response['message']['content']
         
-        # 6. 將問答存入對話紀錄
+        # 8. 將問答存入對話紀錄
         try:
             conn = sqlite3.connect("notebooks.db")
             cursor = conn.cursor()
@@ -393,7 +432,8 @@ async def ask_question(request: QuestionRequest):
             "status": "success",
             "question": request.question,
             "answer": ai_answer,
-            "reference_sources": top_documents # 附上經過精排後的 Top-5 參考資料
+            "reference_sources": top_documents,
+            "source_files": source_files
         }
         
     except Exception as e:
