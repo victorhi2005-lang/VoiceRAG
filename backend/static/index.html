@@ -415,31 +415,49 @@
             list.innerHTML = '';
 
             const questions = (suggestions || [])
-                .map(item => typeof item === 'string' ? item : item.question)
-                .filter(question => question && question.trim());
+                .map(item => {
+                    if (typeof item === 'string') {
+                        return { id: null, question: item };
+                    }
+                    return { id: item.id || null, question: item.question };
+                })
+                .filter(item => item.question && item.question.trim());
 
             if (questions.length === 0) {
                 panel.classList.add('hidden');
                 return;
             }
 
-            questions.forEach(question => {
+            questions.forEach(item => {
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'max-w-full px-3 py-2 rounded-xl border border-[#444] bg-[#333] text-sm text-gray-200 hover:bg-[#555] hover:border-gray-400 hover:text-white transition text-left whitespace-normal break-words';
-                button.textContent = question;
-                button.title = question;
-                button.onclick = () => {
+                button.textContent = item.question;
+                button.title = item.question;
+                button.onclick = async () => {
                     button.remove();
                     if (list.children.length === 0) {
                         panel.classList.add('hidden');
                     }
-                    askQuestion(question);
+                    await markSuggestedQuestionUsed(item.id);
+                    askQuestion(item.question);
                 };
                 list.appendChild(button);
             });
 
             panel.classList.remove('hidden');
+        }
+
+        async function markSuggestedQuestionUsed(questionId) {
+            if (!currentNotebookId || !questionId) return;
+
+            try {
+                await fetch(`/api/notebooks/${currentNotebookId}/suggested-questions/${questionId}/used`, {
+                    method: 'POST'
+                });
+            } catch (error) {
+                console.error('Failed to mark suggested question as used:', error);
+            }
         }
 
         async function uploadAudio() {

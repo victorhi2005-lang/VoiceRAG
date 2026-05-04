@@ -73,10 +73,15 @@ def init_db():
             source_filename TEXT,
             question TEXT,
             priority INTEGER,
+            used INTEGER DEFAULT 0,
             created_at TEXT,
             FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
         )
     ''')
+    cursor.execute("PRAGMA table_info(suggested_questions)")
+    suggested_question_columns = [row[1] for row in cursor.fetchall()]
+    if "used" not in suggested_question_columns:
+        cursor.execute("ALTER TABLE suggested_questions ADD COLUMN used INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -104,6 +109,7 @@ print("[OK] 所有 AI 系統與資料庫載入完成！", flush=True)
 # 每個筆記本維護一個獨立的 BM25 索引，存在記憶體中
 bm25_indices = {}   # {notebook_id: BM25Okapi 實例}
 bm25_docs = {}      # {notebook_id: [原始文件列表]}
+bm25_metas = {}     # {notebook_id: [metadata 列表]}
 
 def tokenize_chinese(text):
     """jieba 中文分詞，過濾空白"""
@@ -115,9 +121,11 @@ def rebuild_bm25_index(notebook_id):
         collection = get_notebook_collection(notebook_id)
         if collection.count() == 0:
             return
-        all_data = collection.get()
+        all_data = collection.get(include=["documents", "metadatas"])
         docs = all_data['documents']
+        metadatas = all_data.get('metadatas') or [{} for _ in docs]
         bm25_docs[notebook_id] = docs
+        bm25_metas[notebook_id] = metadatas
         tokenized = [tokenize_chinese(doc) for doc in docs]
         bm25_indices[notebook_id] = BM25Okapi(tokenized)
     except Exception:
@@ -207,8 +215,109 @@ def semantic_chunk(text, embeddings_model, similarity_threshold=0.65, max_chunk_
             chunks[-1] += current_chunk.strip()
         else:
             chunks.append(current_chunk.strip())
-    
+
     return chunks if chunks else [text]
+
+# ==========================================
+# 來源引用與時間戳工具
+# ==========================================
+def format_timestamp(seconds):
+    """將秒數格式化為 MM:SS 或 HH:MM:SS"""
+    if seconds is None:
+        return None
+
+    total_seconds = max(0, int(round(float(seconds))))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+def get_time_range_text(start_time, end_time):
+    """回傳適合顯示的時間區間文字"""
+    start_text = format_timestamp(start_time)
+    end_text = format_timestamp(end_time)
+    if start_text and end_text:
+        return f"{start_text}-{end_text}"
+    return "時間未記錄"
+
+def get_time_for_char_position(position, segment_ranges, edge="start"):
+    """依文字位置推估對應的 Whisper segment 時間"""
+    if not segment_ranges:
+        return None
+
+    for item in segment_ranges:
+        if item["char_start"] <= position < item["char_end"]:
+            return item["start"] if edge == "start" else item["end"]
+
+    if position <= segment_ranges[0]["char_start"]:
+        return segment_ranges[0]["start"] if edge == "start" else segment_ranges[0]["end"]
+    return segment_ranges[-1]["start"] if edge == "start" else segment_ranges[-1]["end"]
+
+def build_chunk_metadata(chunks, timed_segments, source_filename):
+    """將 chunk 依文字位置對應回 Whisper 時間戳，供來源引用使用"""
+    transcript_text = "".join(segment["text"] for segment in timed_segments)
+    segment_ranges = []
+    char_position = 0
+    for segment in timed_segments:
+        text = segment["text"]
+        char_start = char_position
+        char_end = char_start + len(text)
+        segment_ranges.append({
+            "char_start": char_start,
+            "char_end": char_end,
+            "start": segment["start"],
+            "end": segment["end"]
+        })
+        char_position = char_end
+
+    metadata_list = []
+    search_position = 0
+    for i, chunk in enumerate(chunks):
+        chunk_text = chunk.strip()
+        found_at = transcript_text.find(chunk_text, search_position) if chunk_text else -1
+        if found_at == -1:
+            found_at = search_position
+        chunk_end = min(found_at + len(chunk_text), len(transcript_text))
+        start_time = get_time_for_char_position(found_at, segment_ranges, edge="start")
+        end_time = get_time_for_char_position(max(found_at, chunk_end - 1), segment_ranges, edge="end")
+        metadata_list.append({
+            "source": source_filename,
+            "chunk_index": i,
+            "start_time": float(start_time) if start_time is not None else -1.0,
+            "end_time": float(end_time) if end_time is not None else -1.0,
+            "time_range": get_time_range_text(start_time, end_time)
+        })
+        search_position = chunk_end
+
+    return metadata_list
+
+def get_reference_label(metadata):
+    """將 metadata 轉成使用者看得懂的來源引用文字"""
+    if not metadata:
+        return "未知來源（時間未記錄）"
+
+    source = metadata.get("source", "未知來源")
+    time_range = metadata.get("time_range")
+    if not time_range:
+        start_time = metadata.get("start_time")
+        end_time = metadata.get("end_time")
+        if start_time is not None and float(start_time) >= 0 and end_time is not None and float(end_time) >= 0:
+            time_range = get_time_range_text(start_time, end_time)
+        else:
+            time_range = "時間未記錄"
+    return f"{source}（{time_range}）"
+
+def append_reference_summary(answer, references):
+    """在 AI 回答後附上系統整理的參考來源，確保回答可追溯"""
+    if not references:
+        return answer
+
+    lines = ["", "", "參考來源："]
+    for i, reference in enumerate(references, start=1):
+        lines.append(f"{i}. {reference['label']}")
+    return answer.rstrip() + "\n".join(lines)
 
 # ==========================================
 # 推薦問題產生：「也許你想問」
@@ -287,13 +396,22 @@ def save_suggested_questions(notebook_id, source_filename, questions):
         "DELETE FROM suggested_questions WHERE notebook_id = ?",
         (notebook_id,)
     )
+    saved_questions = []
     for priority, question in enumerate(questions, start=1):
         cursor.execute(
-            "INSERT INTO suggested_questions (notebook_id, source_filename, question, priority, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO suggested_questions (notebook_id, source_filename, question, priority, used, created_at) VALUES (?, ?, ?, ?, 0, ?)",
             (notebook_id, source_filename, question, priority, now)
         )
+        saved_questions.append({
+            "id": cursor.lastrowid,
+            "question": question,
+            "priority": priority,
+            "source_filename": source_filename,
+            "created_at": now
+        })
     conn.commit()
     conn.close()
+    return saved_questions
 
 # ==========================================
 # API 1：筆記本管理 (Notebook CRUD)
@@ -364,9 +482,10 @@ async def get_notebook_details(notebook_id: str):
     # 取得最新一次來源產生的推薦問題，避免重新進入筆記本時混入舊題目
     cursor.execute(
         """
-        SELECT question, priority, source_filename, created_at
+        SELECT id, question, priority, source_filename, created_at
         FROM suggested_questions
         WHERE notebook_id = ?
+          AND used = 0
           AND created_at = (
               SELECT MAX(created_at)
               FROM suggested_questions
@@ -377,12 +496,24 @@ async def get_notebook_details(notebook_id: str):
         (notebook_id, notebook_id)
     )
     suggested_questions = [
-        {"question": r[0], "priority": r[1], "source_filename": r[2], "created_at": r[3]}
+        {"id": r[0], "question": r[1], "priority": r[2], "source_filename": r[3], "created_at": r[4]}
         for r in cursor.fetchall()
     ]
     
     conn.close()
     return {"status": "success", "sources": sources, "messages": messages, "suggested_questions": suggested_questions}
+
+@app.post("/api/notebooks/{notebook_id}/suggested-questions/{question_id}/used")
+async def mark_suggested_question_used(notebook_id: str, question_id: int):
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE suggested_questions SET used = 1 WHERE id = ? AND notebook_id = ?",
+        (question_id, notebook_id)
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
 
 @app.delete("/api/notebooks/{notebook_id}")
 async def delete_notebook(notebook_id: str):
@@ -402,6 +533,7 @@ async def delete_notebook(notebook_id: str):
     # 清除 BM25 索引
     bm25_indices.pop(notebook_id, None)
     bm25_docs.pop(notebook_id, None)
+    bm25_metas.pop(notebook_id, None)
         
     return {"status": "success"}
 
@@ -432,7 +564,15 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
             vad_filter=True,  # 啟用 VAD 過濾靜音段，減少 VRAM 峰值
             batch_size=16     # 開啟 16 線程批次推論
         )
-        transcript_text = "".join([segment.text for segment in segments])
+        timed_segments = [
+            {
+                "text": segment.text,
+                "start": float(segment.start),
+                "end": float(segment.end)
+            }
+            for segment in segments
+        ]
+        transcript_text = "".join([segment["text"] for segment in timed_segments])
         # 釋放 Whisper 推論時佔用的 VRAM
         torch.cuda.empty_cache()
         gc.collect()
@@ -449,10 +589,11 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
             chunks = text_splitter.split_text(transcript_text)
 
         collection = get_notebook_collection(notebook_id)
+        chunk_metadatas = build_chunk_metadata(chunks, timed_segments, file.filename)
         for i, chunk in enumerate(chunks):
             vector = embeddings_model.encode(chunk).tolist()
             chunk_id = f"{file.filename}_chunk_{i}_{uuid.uuid4().hex[:6]}"
-            collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[{"source": file.filename}])
+            collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[chunk_metadatas[i]])
         
         # 同步重建該筆記本的 BM25 索引
         rebuild_bm25_index(notebook_id)
@@ -488,6 +629,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
 
     suggested_questions = generate_suggested_questions(transcript_text)
+    saved_suggested_questions = []
 
     # 3. 將 AI 摘要與推薦問題存入資料庫
     try:
@@ -498,7 +640,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         cursor.execute("INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)", (notebook_id, 'AI', formatted_result, now))
         conn.commit()
         conn.close()
-        save_suggested_questions(notebook_id, file.filename, suggested_questions)
+        saved_suggested_questions = save_suggested_questions(notebook_id, file.filename, suggested_questions)
     except Exception as e:
         pass # 若儲存對話失敗不中斷流程
 
@@ -508,7 +650,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         "message": f"✅ 成功存入 {len(chunks)} 個知識片段。",
         "raw_transcript": transcript_text,
         "structured_knowledge": structured_knowledge,
-        "suggested_questions": suggested_questions
+        "suggested_questions": saved_suggested_questions
     }
 
 
@@ -559,11 +701,11 @@ async def ask_question(request: QuestionRequest):
         )
         dense_docs = dense_results['documents'][0]
         dense_metas = dense_results['metadatas'][0]
-        # 建立文件 → 來源檔名的對照表
-        doc_source_map = {}
+        # 建立文件 → metadata 的對照表
+        doc_metadata_map = {}
         for doc, meta in zip(dense_docs, dense_metas):
-            if meta and 'source' in meta:
-                doc_source_map[doc] = meta['source']
+            if meta:
+                doc_metadata_map[doc] = meta
         
         # 2b. BM25 關鍵字檢索 (Top-20)
         bm25_top_docs = []
@@ -577,6 +719,9 @@ async def ask_question(request: QuestionRequest):
             top_n = min(n_candidates, len(bm25_scores))
             top_indices = bm25_scores.argsort()[-top_n:][::-1]
             bm25_top_docs = [bm25_docs[nb_id][i] for i in top_indices]
+            if nb_id in bm25_metas:
+                for i in top_indices:
+                    doc_metadata_map[bm25_docs[nb_id][i]] = bm25_metas[nb_id][i] or {}
         
         # 3. 使用 RRF (Reciprocal Rank Fusion) 融合兩組結果
         if bm25_top_docs:
@@ -596,11 +741,28 @@ async def ask_question(request: QuestionRequest):
         
         ranked = sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True)[:5]
         top_documents = [doc for _, doc in ranked]
-        retrieved_context = "\n\n".join(top_documents)
+        references = []
+        context_blocks = []
+        seen_reference_labels = set()
+        for index, doc in enumerate(top_documents, start=1):
+            metadata = doc_metadata_map.get(doc, {})
+            label = get_reference_label(metadata)
+            context_blocks.append(f"[來源 {index}: {label}]\n{doc}")
+            if label not in seen_reference_labels:
+                seen_reference_labels.add(label)
+                references.append({
+                    "label": label,
+                    "source": metadata.get("source", "未知來源") if metadata else "未知來源",
+                    "time_range": metadata.get("time_range", "時間未記錄") if metadata else "時間未記錄",
+                    "start_time": metadata.get("start_time", -1) if metadata else -1,
+                    "end_time": metadata.get("end_time", -1) if metadata else -1,
+                    "chunk_index": metadata.get("chunk_index", -1) if metadata else -1
+                })
+        retrieved_context = "\n\n".join(context_blocks)
         
-        # 彙整 Top-5 的來源檔名
-        source_files = list(set(doc_source_map.get(doc, "未知來源") for doc in top_documents))
-        source_info = "、".join(source_files)
+        # 彙整 Top-5 的來源檔名與時間區間
+        source_files = list(dict.fromkeys(reference["source"] for reference in references))
+        source_info = "；".join(reference["label"] for reference in references) if references else "未知來源"
         
         # 5. 讀取最近對話紀錄，建構多輪對話脈絡
         history = get_recent_messages(request.notebook_id, limit=6)
@@ -633,7 +795,7 @@ async def ask_question(request: QuestionRequest):
         
         # 7. 呼叫 Qwen3-14B 回答
         response = ollama.chat(model='qwen3:14b', messages=[{'role': 'user', 'content': rag_prompt + '\n/no_think'}])
-        ai_answer = response['message']['content']
+        ai_answer = append_reference_summary(response['message']['content'], references)
         
         # 8. 將問答存入對話紀錄
         try:
@@ -653,7 +815,8 @@ async def ask_question(request: QuestionRequest):
             "question": request.question,
             "answer": ai_answer,
             "reference_sources": top_documents,
-            "source_files": source_files
+            "source_files": source_files,
+            "references": references
         }
         
     except Exception as e:
