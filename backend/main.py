@@ -6,6 +6,7 @@ import shutil
 import os
 import sqlite3
 import uuid
+import json
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from faster_whisper import WhisperModel, BatchedInferencePipeline
@@ -61,6 +62,17 @@ def init_db():
             notebook_id TEXT,
             sender TEXT,
             text TEXT,
+            created_at TEXT,
+            FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS suggested_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notebook_id TEXT,
+            source_filename TEXT,
+            question TEXT,
+            priority INTEGER,
             created_at TEXT,
             FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
         )
@@ -199,6 +211,91 @@ def semantic_chunk(text, embeddings_model, similarity_threshold=0.65, max_chunk_
     return chunks if chunks else [text]
 
 # ==========================================
+# 推薦問題產生：「也許你想問」
+# ==========================================
+def parse_suggested_questions(raw_text, limit):
+    """解析 LLM 回傳的問題清單，優先讀 JSON，失敗時用行切分 fallback"""
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned.replace("json\n", "", 1).replace("JSON\n", "", 1).strip()
+
+    questions = []
+    try:
+        json_text = cleaned
+        if not cleaned.startswith("[") and "[" in cleaned and "]" in cleaned:
+            match = re.search(r'\[[\s\S]*\]', cleaned)
+            if match:
+                json_text = match.group(0)
+        data = json.loads(json_text)
+        if isinstance(data, dict):
+            data = data.get("questions", [])
+        if isinstance(data, list):
+            questions = [str(item).strip() for item in data]
+    except Exception:
+        for line in cleaned.splitlines():
+            question = re.sub(r'^\s*[-*•\d.、)）]+\s*', '', line).strip()
+            if question:
+                questions.append(question)
+
+    unique_questions = []
+    seen = set()
+    for question in questions:
+        question = question.strip().strip('"').strip("'")
+        if not question or question in seen:
+            continue
+        seen.add(question)
+        unique_questions.append(question)
+        if len(unique_questions) >= limit:
+            break
+    return unique_questions
+
+def generate_suggested_questions(transcript_text):
+    """根據逐字稿產生推薦問題。失敗時回傳空清單，不中斷上傳流程。"""
+    prompt = f"""
+你是一個專業的知識庫問題設計助手。
+請根據下方語音逐字稿的內容量、資訊密度與可提問性，自行判斷要產生 0 到 3 個使用者最可能想問的問題。
+
+排序規則：
+1. 最能幫助使用者理解整體內容的問題排前面。
+2. 重要主題、關鍵觀點、實用資訊排前面。
+3. 細節補充或延伸問題排後面。
+
+輸出規則：
+1. 必須使用繁體中文。
+2. 最多只能輸出 3 題。
+3. 如果內容太短、資訊不足，或沒有明確可問重點，請輸出空陣列 []。
+4. 只輸出 JSON 字串陣列，例如 ["問題一？", "問題二？"]。
+5. 不要輸出 Markdown、編號、解釋或其他文字。
+
+語音逐字稿內容：
+{transcript_text}
+"""
+    try:
+        response = ollama.chat(model='qwen3:14b', messages=[{'role': 'user', 'content': prompt + '\n/no_think'}])
+        raw_questions = response['message']['content']
+        return parse_suggested_questions(raw_questions, 3)
+    except Exception:
+        return []
+
+def save_suggested_questions(notebook_id, source_filename, questions):
+    """儲存最新推薦問題；若本次沒有題目，就清空畫面顯示用的舊題目"""
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "DELETE FROM suggested_questions WHERE notebook_id = ?",
+        (notebook_id,)
+    )
+    for priority, question in enumerate(questions, start=1):
+        cursor.execute(
+            "INSERT INTO suggested_questions (notebook_id, source_filename, question, priority, created_at) VALUES (?, ?, ?, ?, ?)",
+            (notebook_id, source_filename, question, priority, now)
+        )
+    conn.commit()
+    conn.close()
+
+# ==========================================
 # API 1：筆記本管理 (Notebook CRUD)
 # ==========================================
 
@@ -263,9 +360,29 @@ async def get_notebook_details(notebook_id: str):
     # 取得對話紀錄
     cursor.execute("SELECT sender, text, created_at FROM messages WHERE notebook_id = ? ORDER BY id ASC", (notebook_id,))
     messages = [{"sender": r[0], "text": r[1], "created_at": r[2]} for r in cursor.fetchall()]
+
+    # 取得最新一次來源產生的推薦問題，避免重新進入筆記本時混入舊題目
+    cursor.execute(
+        """
+        SELECT question, priority, source_filename, created_at
+        FROM suggested_questions
+        WHERE notebook_id = ?
+          AND created_at = (
+              SELECT MAX(created_at)
+              FROM suggested_questions
+              WHERE notebook_id = ?
+          )
+        ORDER BY priority ASC
+        """,
+        (notebook_id, notebook_id)
+    )
+    suggested_questions = [
+        {"question": r[0], "priority": r[1], "source_filename": r[2], "created_at": r[3]}
+        for r in cursor.fetchall()
+    ]
     
     conn.close()
-    return {"status": "success", "sources": sources, "messages": messages}
+    return {"status": "success", "sources": sources, "messages": messages, "suggested_questions": suggested_questions}
 
 @app.delete("/api/notebooks/{notebook_id}")
 async def delete_notebook(notebook_id: str):
@@ -370,7 +487,9 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
     except Exception as e:
         return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
 
-    # 3. 將 AI 摘要存入對話紀錄
+    suggested_questions = generate_suggested_questions(transcript_text)
+
+    # 3. 將 AI 摘要與推薦問題存入資料庫
     try:
         conn = sqlite3.connect("notebooks.db")
         cursor = conn.cursor()
@@ -379,6 +498,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         cursor.execute("INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)", (notebook_id, 'AI', formatted_result, now))
         conn.commit()
         conn.close()
+        save_suggested_questions(notebook_id, file.filename, suggested_questions)
     except Exception as e:
         pass # 若儲存對話失敗不中斷流程
 
@@ -387,7 +507,8 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
         "status": "success",
         "message": f"✅ 成功存入 {len(chunks)} 個知識片段。",
         "raw_transcript": transcript_text,
-        "structured_knowledge": structured_knowledge
+        "structured_knowledge": structured_knowledge,
+        "suggested_questions": suggested_questions
     }
 
 
