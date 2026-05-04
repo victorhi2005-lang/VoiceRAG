@@ -313,7 +313,7 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
             language="zh",
             initial_prompt="這是一段繁體中文的台灣口音逐字稿：",
             vad_filter=True,  # 啟用 VAD 過濾靜音段，減少 VRAM 峰值
-            batch_size=16     # 開啟 16 線程批次推論，徹底榨乾 RTX 5080 效能
+            batch_size=16     # 開啟 16 線程批次推論
         )
         transcript_text = "".join([segment.text for segment in segments])
         # 釋放 Whisper 推論時佔用的 VRAM
@@ -430,7 +430,7 @@ async def ask_question(request: QuestionRequest):
         total_docs = collection.count()
         n_candidates = min(20, total_docs)
         
-        # 2a. Dense 向量檢索 (Top-20)，同時擈取 metadata 用於來源追蹤
+        # 2a. Dense 向量檢索 (Top-20)，同時獲取 metadata 用於來源追蹤
         dense_results = collection.query(
             query_embeddings=[query_vector],
             n_results=n_candidates,
