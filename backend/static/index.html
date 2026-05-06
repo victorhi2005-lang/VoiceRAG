@@ -122,9 +122,6 @@
             <div id="chatHistory" class="flex-1 overflow-y-auto p-6 md:p-10 space-y-8 min-h-0">
                 <!-- 初始 AI 歡迎訊息 -->
                 <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
-                    <div
-                        class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-base font-bold mr-4 shrink-0 mt-1 shadow-md">
-                        🤖</div>
                     <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-base">你好！我是你的專屬
                         VoiceRAG 知識助理。
                         請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
@@ -380,7 +377,6 @@
                         // 如果沒有對話紀錄，顯示歡迎訊息
                         chatHistory.innerHTML = `
                             <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
-                                <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-sm font-bold mr-4 shrink-0 mt-1 shadow-md">🤖</div>
                                 <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm">你好！我是你的專屬 VoiceRAG 知識助理。
 請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
                             </div>
@@ -625,6 +621,191 @@
             }
         }
 
+        const uploadProgressStages = [
+            { title: '上傳中', detail: '正在送出音檔到後端。', percent: 10 },
+            { title: '語音辨識中', detail: 'Whisper 正在把音訊轉成逐字稿。', percent: 28 },
+            { title: '文字切分中', detail: '正在整理逐字稿並切成知識片段。', percent: 44 },
+            { title: '向量化中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 64 },
+            { title: 'AI 摘要中', detail: 'Ollama 正在產生重點摘要。', percent: 82 },
+            { title: '推薦問題中', detail: '正在產生「也許你想問」。', percent: 92 },
+            { title: '完成', detail: '音檔已處理完成。', percent: 100 }
+        ];
+
+        function createUploadTempSourceElement(id, fileName) {
+            const item = document.createElement('div');
+            item.id = id;
+            item.className = 'text-gray-400 p-2 rounded bg-[#222428] border border-[#333] transition animate-pulse space-y-2';
+
+            const row = document.createElement('div');
+            row.className = 'flex items-center space-x-2 overflow-hidden text-base';
+            row.innerHTML = `
+                <svg class="w-4 h-4 shrink-0 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+            `;
+
+            const name = document.createElement('span');
+            name.className = 'truncate';
+            name.title = fileName;
+            name.textContent = fileName;
+            row.appendChild(name);
+
+            const stageText = document.createElement('div');
+            stageText.className = 'upload-source-stage text-xs text-gray-500 pl-6';
+
+            const barTrack = document.createElement('div');
+            barTrack.className = 'h-1 rounded-full bg-[#333] overflow-hidden ml-6';
+            const bar = document.createElement('div');
+            bar.className = 'upload-source-bar h-full bg-blue-500 transition-all duration-500';
+            bar.style.width = '0%';
+            barTrack.appendChild(bar);
+
+            item.appendChild(row);
+            item.appendChild(stageText);
+            item.appendChild(barTrack);
+            return item;
+        }
+
+        function createUploadProgressMessage(id, fileName) {
+            const welcomeMsg = document.getElementById('initialWelcomeMessage');
+            if (welcomeMsg) {
+                welcomeMsg.remove();
+            }
+
+            const chatHistory = document.getElementById('chatHistory');
+            const wrapper = document.createElement('div');
+            wrapper.id = id;
+            wrapper.className = 'flex max-w-4xl mx-auto w-full';
+
+            const card = document.createElement('div');
+            card.className = 'upload-progress-card w-full max-w-3xl bg-[#24262b] border border-[#3a3d44] rounded-2xl p-4 shadow-lg space-y-3';
+
+            const header = document.createElement('div');
+            header.className = 'flex items-start justify-between gap-4';
+
+            const titleGroup = document.createElement('div');
+            titleGroup.className = 'min-w-0';
+
+            const title = document.createElement('div');
+            title.className = 'upload-progress-title text-sm font-semibold text-gray-200';
+
+            const fileLabel = document.createElement('div');
+            fileLabel.className = 'text-xs text-gray-500 truncate mt-1';
+            fileLabel.textContent = fileName;
+            fileLabel.title = fileName;
+
+            titleGroup.appendChild(title);
+            titleGroup.appendChild(fileLabel);
+
+            const percent = document.createElement('div');
+            percent.className = 'upload-progress-percent text-sm font-semibold text-blue-300 shrink-0';
+
+            header.appendChild(titleGroup);
+            header.appendChild(percent);
+
+            const detail = document.createElement('div');
+            detail.className = 'upload-progress-detail text-sm text-gray-400';
+
+            const track = document.createElement('div');
+            track.className = 'h-2 rounded-full bg-[#333] overflow-hidden';
+            const bar = document.createElement('div');
+            bar.className = 'upload-progress-bar h-full bg-blue-500 transition-all duration-500';
+            bar.style.width = '0%';
+            track.appendChild(bar);
+
+            const caption = document.createElement('div');
+            caption.className = 'upload-progress-caption text-sm text-blue-200 transition-opacity duration-300 opacity-100 min-h-[1.5rem]';
+
+            card.appendChild(header);
+            card.appendChild(detail);
+            card.appendChild(track);
+            card.appendChild(caption);
+            wrapper.appendChild(card);
+            chatHistory.appendChild(wrapper);
+            chatHistory.scrollTo({ top: chatHistory.scrollHeight, behavior: 'smooth' });
+        }
+
+        function setUploadProgressCaption(progressEl, text, state) {
+            const caption = progressEl.querySelector('.upload-progress-caption');
+            if (!caption || caption.dataset.currentText === text) return;
+
+            window.clearTimeout(Number(caption.dataset.fadeTimer || 0));
+            caption.classList.add('opacity-0');
+
+            const timer = window.setTimeout(() => {
+                caption.textContent = text;
+                caption.dataset.currentText = text;
+                caption.className = `upload-progress-caption text-sm transition-opacity duration-300 opacity-0 min-h-[1.5rem] ${state === 'error' ? 'text-red-200' : state === 'complete' ? 'text-green-200' : 'text-blue-200'}`;
+                window.requestAnimationFrame(() => {
+                    caption.classList.remove('opacity-0');
+                    caption.classList.add('opacity-100');
+                });
+            }, 220);
+
+            caption.dataset.fadeTimer = String(timer);
+        }
+
+        function updateUploadProgress(progress, stageIndex, state = 'active', errorMessage = '') {
+            const stage = uploadProgressStages[stageIndex] || uploadProgressStages[0];
+            const percentValue = state === 'error' ? 100 : stage.percent;
+            const titleText = state === 'error' ? '處理失敗' : stage.title;
+            const detailText = state === 'error' ? errorMessage : stage.detail;
+
+            const progressEl = document.getElementById(progress.messageId);
+            if (progressEl) {
+                progressEl.querySelector('.upload-progress-title').textContent = titleText;
+                progressEl.querySelector('.upload-progress-detail').textContent = detailText;
+                progressEl.querySelector('.upload-progress-percent').textContent = state === 'error' ? '失敗' : `${percentValue}%`;
+                progressEl.querySelector('.upload-progress-bar').style.width = `${percentValue}%`;
+                progressEl.querySelector('.upload-progress-bar').className = `upload-progress-bar h-full transition-all duration-500 ${state === 'error' ? 'bg-red-500' : state === 'complete' ? 'bg-green-500' : 'bg-blue-500'}`;
+                setUploadProgressCaption(progressEl, state === 'error' ? errorMessage : stage.title, state);
+            }
+
+            const sourceEl = document.getElementById(progress.sourceId);
+            if (sourceEl) {
+                const sourceStage = sourceEl.querySelector('.upload-source-stage');
+                const sourceBar = sourceEl.querySelector('.upload-source-bar');
+                if (sourceStage) {
+                    sourceStage.textContent = state === 'error' ? '處理失敗' : stage.title;
+                    sourceStage.className = `upload-source-stage text-xs pl-6 ${state === 'error' ? 'text-red-300' : state === 'complete' ? 'text-green-300' : 'text-gray-500'}`;
+                }
+                if (sourceBar) {
+                    sourceBar.style.width = `${percentValue}%`;
+                    sourceBar.className = `upload-source-bar h-full transition-all duration-500 ${state === 'error' ? 'bg-red-500' : state === 'complete' ? 'bg-green-500' : 'bg-blue-500'}`;
+                }
+            }
+        }
+
+        function startUploadProgress(progress) {
+            let stageIndex = 0;
+            updateUploadProgress(progress, stageIndex);
+            progress.timer = window.setInterval(() => {
+                stageIndex = Math.min(stageIndex + 1, uploadProgressStages.length - 2);
+                updateUploadProgress(progress, stageIndex);
+            }, 6000);
+        }
+
+        function finishUploadProgress(progress) {
+            window.clearInterval(progress.timer);
+            updateUploadProgress(progress, uploadProgressStages.length - 1, 'complete');
+
+            window.setTimeout(() => {
+                const progressEl = document.getElementById(progress.messageId);
+                if (!progressEl) return;
+
+                progressEl.classList.add('transition-opacity', 'duration-500', 'opacity-0');
+                window.setTimeout(() => {
+                    progressEl.remove();
+                }, 520);
+            }, 1200);
+        }
+
+        function failUploadProgress(progress, message) {
+            window.clearInterval(progress.timer);
+            updateUploadProgress(progress, uploadProgressStages.length - 2, 'error', message);
+        }
+
         async function uploadAudio() {
             if (!currentNotebookId) return;
             const fileInput = document.getElementById('audioFile');
@@ -638,18 +819,12 @@
             const loadingMsgId = 'msg-' + Date.now();
 
             // 在左側欄顯示載入狀態
-            const tempSourceHtml = `
-                <div id="${tempSourceId}" class="flex items-center justify-between text-base text-gray-400 p-2 rounded hover:bg-[#333] transition animate-pulse">
-                    <div class="flex items-center space-x-2 overflow-hidden">
-                        <svg class="w-4 h-4 shrink-0 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                        <span class="truncate">${file.name} (處理中...)</span>
-                    </div>
-                </div>
-            `;
-            sourcesList.insertAdjacentHTML('beforeend', tempSourceHtml);
+            sourcesList.appendChild(createUploadTempSourceElement(tempSourceId, file.name));
 
             // 在對話框顯示載入訊息
-            appendMessage('AI', '正在為您處理音檔《' + file.name + '》並萃取知識重點，請稍候...', loadingMsgId, true);
+            createUploadProgressMessage(loadingMsgId, file.name);
+            const uploadProgress = { sourceId: tempSourceId, messageId: loadingMsgId, timer: null };
+            startUploadProgress(uploadProgress);
 
             const formData = new FormData();
             formData.append('file', file);
@@ -660,6 +835,8 @@
                 const data = await response.json();
 
                 if (data.status === 'success') {
+                    finishUploadProgress(uploadProgress);
+
                     // 更新左側欄為實際來源
                     const tempSource = document.getElementById(tempSourceId);
                     const source = data.source || {
@@ -667,22 +844,24 @@
                         filename: file.name,
                         has_transcript: true
                     };
-                    tempSource.replaceWith(createSourceElement(source));
+                    if (tempSource) {
+                        tempSource.replaceWith(createSourceElement(source));
+                    }
 
-                    // 移除載入訊息並顯示 AI 重點摘要
-                    document.getElementById(loadingMsgId).remove();
+                    // 顯示 AI 重點摘要
                     const formattedResult = `**《${file.name}》重點摘要**\n\n${data.structured_knowledge}`;
                     appendMessage('AI', formattedResult);
                     renderSuggestedQuestions(data.suggested_questions || []);
                 } else {
-                    document.getElementById(tempSourceId).remove();
-                    document.getElementById(loadingMsgId).remove();
-                    appendMessage('AI', '❌ 處理音檔時發生錯誤：' + (data.message || '未知錯誤'));
+                    const errorMessage = '處理音檔時發生錯誤：' + (data.message || '未知錯誤');
+                    failUploadProgress(uploadProgress, errorMessage);
+                    const tempSource = document.getElementById(tempSourceId);
+                    if (tempSource) tempSource.remove();
                 }
             } catch (error) {
-                document.getElementById(tempSourceId).remove();
-                document.getElementById(loadingMsgId).remove();
-                appendMessage('AI', '❌ 網路連線異常，請檢查伺服器狀態。');
+                failUploadProgress(uploadProgress, '網路連線異常，請檢查伺服器狀態。');
+                const tempSource = document.getElementById(tempSourceId);
+                if (tempSource) tempSource.remove();
             } finally {
                 // 重置檔案輸入框
                 fileInput.value = '';
@@ -760,10 +939,9 @@
                     <div class="bg-[#333] px-5 py-3.5 rounded-3xl text-gray-200 whitespace-pre-wrap max-w-2xl ml-auto text-base border border-[#444] shadow-md">${text}</div>
                 `;
             } else {
-                // AI 訊息：靠左帶頭像
+                // AI 訊息：靠左顯示文字
                 const pulseClass = animate ? 'animate-pulse' : '';
                 div.innerHTML = `
-                    <div class="w-8 h-8 rounded-full bg-[#8A2BE2] flex items-center justify-center text-white text-base font-bold mr-4 shrink-0 mt-1 shadow-md">🤖</div>
                     <div class="text-gray-300 pt-2 whitespace-pre-wrap leading-relaxed max-w-3xl text-base ${pulseClass}">${text}</div>
                 `;
             }
