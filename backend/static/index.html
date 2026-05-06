@@ -177,10 +177,42 @@
         </div>
     </div>
 
+    <!-- 逐字稿查看與修正 Dialog -->
+    <div id="transcriptModal" class="fixed inset-0 z-50 flex items-center justify-center hidden bg-black bg-opacity-50 px-4">
+        <div class="bg-[#1e1f22] border border-[#333] rounded-xl w-full max-w-4xl max-h-[88vh] shadow-2xl flex flex-col">
+            <div class="p-5 border-b border-[#333] flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                    <h3 class="text-lg font-semibold text-gray-200">逐字稿查看與修正</h3>
+                    <p id="transcriptFilename" class="text-sm text-gray-500 truncate mt-1"></p>
+                </div>
+                <button onclick="closeTranscriptModal()" class="text-gray-400 hover:text-white transition" title="關閉">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                        stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="p-5 flex-1 min-h-0 flex flex-col gap-3">
+                <p id="transcriptStatus" class="text-sm text-gray-400"></p>
+                <textarea id="transcriptInput"
+                    class="w-full min-h-[360px] flex-1 bg-[#131314] border border-[#444] rounded-lg px-4 py-3 text-gray-200 text-sm leading-relaxed resize-none focus:outline-none focus:border-gray-400 disabled:opacity-60"
+                    placeholder="逐字稿會顯示在這裡..."></textarea>
+            </div>
+            <div class="p-5 border-t border-[#333] flex justify-end gap-3">
+                <button onclick="closeTranscriptModal()"
+                    class="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
+                <button id="saveTranscriptBtn" onclick="saveTranscriptAndReindex()"
+                    class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-[#333] disabled:text-gray-500 disabled:cursor-not-allowed text-white rounded-lg transition">儲存並重新索引</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // 全域狀態：當前選擇的筆記本 ID
         let currentNotebookId = null;
         let renameTargetId = null;
+        let currentTranscriptSourceId = null;
+        let currentTranscriptOriginalText = '';
 
         // 頁面載入時，獲取筆記本列表
         document.addEventListener('DOMContentLoaded', fetchNotebooks);
@@ -249,6 +281,38 @@
             });
         }
 
+        function createSourceElement(source) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'w-full flex items-center justify-between text-base text-gray-300 p-2 rounded hover:bg-[#333] transition cursor-pointer text-left';
+            button.onclick = () => openTranscriptModal(source.id);
+
+            const content = document.createElement('div');
+            content.className = 'flex items-center space-x-2 overflow-hidden min-w-0';
+
+            const icon = document.createElement('span');
+            icon.className = 'text-blue-500 font-bold shrink-0';
+            icon.textContent = '▶';
+
+            const name = document.createElement('span');
+            name.className = 'truncate';
+            name.title = source.filename;
+            name.textContent = source.filename;
+
+            content.appendChild(icon);
+            content.appendChild(name);
+            button.appendChild(content);
+
+            if (!source.has_transcript) {
+                const badge = document.createElement('span');
+                badge.className = 'ml-2 text-xs text-amber-300 border border-amber-500/40 rounded px-2 py-0.5 shrink-0';
+                badge.textContent = '無逐字稿';
+                button.appendChild(badge);
+            }
+
+            return button;
+        }
+
         // 切換選項下拉選單
         function toggleDropdown(event, id) {
             event.stopPropagation(); // 避免觸發進入筆記本
@@ -302,15 +366,9 @@
 
                 if (data.status === 'success') {
                     // 渲染來源列表
+                    const sourcesList = document.getElementById('sourcesList');
                     data.sources.forEach(source => {
-                        document.getElementById('sourcesList').innerHTML += `
-                            <div class="flex items-center justify-between text-base text-gray-300 p-2 rounded hover:bg-[#333] transition cursor-pointer">
-                                <div class="flex items-center space-x-2 overflow-hidden">
-                                    <span class="text-blue-500 font-bold">▶</span>
-                                    <span class="truncate" title="${source.filename}">${source.filename}</span>
-                                </div>
-                            </div>
-                        `;
+                        sourcesList.appendChild(createSourceElement(source));
                     });
 
                     // 渲染對話紀錄
@@ -342,6 +400,7 @@
         function goBackToDashboard() {
             currentNotebookId = null;
             renderSuggestedQuestions([]);
+            closeTranscriptModal();
             document.getElementById('workspace-view').classList.add('hidden');
             document.getElementById('dashboard-view').classList.remove('hidden');
             fetchNotebooks(); // 重新整理列表以更新來源數量
@@ -388,6 +447,112 @@
                 }
             } catch (err) {
                 console.error("修改名稱失敗", err);
+            }
+        }
+
+        async function openTranscriptModal(sourceId) {
+            if (!currentNotebookId || !sourceId) return;
+
+            currentTranscriptSourceId = sourceId;
+            const modal = document.getElementById('transcriptModal');
+            const filenameEl = document.getElementById('transcriptFilename');
+            const statusEl = document.getElementById('transcriptStatus');
+            const input = document.getElementById('transcriptInput');
+            const saveBtn = document.getElementById('saveTranscriptBtn');
+
+            modal.classList.remove('hidden');
+            filenameEl.textContent = '讀取中...';
+            statusEl.textContent = '正在載入逐字稿...';
+            input.value = '';
+            currentTranscriptOriginalText = '';
+            input.disabled = true;
+            saveBtn.disabled = true;
+
+            try {
+                const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${sourceId}/transcript`);
+                const data = await res.json();
+
+                if (!res.ok || data.status !== 'success') {
+                    throw new Error(data.detail || data.message || '讀取逐字稿失敗');
+                }
+
+                const source = data.source;
+                filenameEl.textContent = source.filename;
+
+                if (!source.has_transcript) {
+                    statusEl.textContent = '此來源尚未保存逐字稿，請重新上傳音檔後再編輯。';
+                    input.value = '';
+                    input.placeholder = '這是舊資料，尚未保存逐字稿。';
+                    input.disabled = true;
+                    saveBtn.disabled = true;
+                    return;
+                }
+
+                input.placeholder = '逐字稿會顯示在這裡...';
+                input.value = source.transcript_text;
+                currentTranscriptOriginalText = source.transcript_text || '';
+                input.disabled = false;
+                saveBtn.disabled = false;
+                statusEl.textContent = source.indexed_at
+                    ? `目前索引時間：${source.indexed_at}`
+                    : '可修正文字後重新建立索引。';
+            } catch (error) {
+                filenameEl.textContent = '讀取失敗';
+                statusEl.textContent = error.message || '讀取逐字稿時發生錯誤。';
+                input.disabled = true;
+                saveBtn.disabled = true;
+            }
+        }
+
+        function closeTranscriptModal() {
+            currentTranscriptSourceId = null;
+            currentTranscriptOriginalText = '';
+            document.getElementById('transcriptModal').classList.add('hidden');
+        }
+
+        async function saveTranscriptAndReindex() {
+            if (!currentNotebookId || !currentTranscriptSourceId) return;
+
+            const statusEl = document.getElementById('transcriptStatus');
+            const input = document.getElementById('transcriptInput');
+            const saveBtn = document.getElementById('saveTranscriptBtn');
+            const transcriptText = input.value.trim();
+
+            if (!transcriptText) {
+                statusEl.textContent = '逐字稿不可為空。';
+                return;
+            }
+
+            if (transcriptText === currentTranscriptOriginalText.trim()) {
+                statusEl.textContent = '逐字稿沒有變更，不需要重新索引。';
+                return;
+            }
+
+            input.disabled = true;
+            saveBtn.disabled = true;
+            statusEl.textContent = '正在儲存逐字稿並重新建立索引...';
+
+            try {
+                const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${currentTranscriptSourceId}/transcript`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ transcript_text: transcriptText })
+                });
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    statusEl.textContent = data.message || '逐字稿已更新並重新索引完成。';
+                    if (data.changed !== false) {
+                        currentTranscriptOriginalText = transcriptText;
+                    }
+                } else {
+                    statusEl.textContent = data.message || '更新逐字稿失敗。';
+                }
+            } catch (error) {
+                statusEl.textContent = '網路連線異常，請檢查後端狀態。';
+            } finally {
+                input.disabled = false;
+                saveBtn.disabled = false;
             }
         }
 
@@ -496,14 +661,13 @@
 
                 if (data.status === 'success') {
                     // 更新左側欄為實際來源
-                    document.getElementById(tempSourceId).outerHTML = `
-                        <div class="flex items-center justify-between text-base text-gray-300 p-2 rounded hover:bg-[#333] transition cursor-pointer">
-                            <div class="flex items-center space-x-2 overflow-hidden">
-                                <span class="text-blue-500 font-bold">▶</span>
-                                <span class="truncate" title="${file.name}">${file.name}</span>
-                            </div>
-                        </div>
-                    `;
+                    const tempSource = document.getElementById(tempSourceId);
+                    const source = data.source || {
+                        id: null,
+                        filename: file.name,
+                        has_transcript: true
+                    };
+                    tempSource.replaceWith(createSourceElement(source));
 
                     // 移除載入訊息並顯示 AI 重點摘要
                     document.getElementById(loadingMsgId).remove();

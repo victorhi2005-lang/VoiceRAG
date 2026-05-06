@@ -53,9 +53,24 @@ def init_db():
             notebook_id TEXT,
             filename TEXT,
             added_at TEXT,
+            transcript_text TEXT,
+            timed_segments TEXT,
+            transcript_updated_at TEXT,
+            indexed_at TEXT,
             FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
         )
     ''')
+    cursor.execute("PRAGMA table_info(sources)")
+    source_columns = [row[1] for row in cursor.fetchall()]
+    source_migrations = {
+        "transcript_text": "ALTER TABLE sources ADD COLUMN transcript_text TEXT",
+        "timed_segments": "ALTER TABLE sources ADD COLUMN timed_segments TEXT",
+        "transcript_updated_at": "ALTER TABLE sources ADD COLUMN transcript_updated_at TEXT",
+        "indexed_at": "ALTER TABLE sources ADD COLUMN indexed_at TEXT",
+    }
+    for column_name, migration_sql in source_migrations.items():
+        if column_name not in source_columns:
+            cursor.execute(migration_sql)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +135,9 @@ def rebuild_bm25_index(notebook_id):
     try:
         collection = get_notebook_collection(notebook_id)
         if collection.count() == 0:
+            bm25_indices.pop(notebook_id, None)
+            bm25_docs.pop(notebook_id, None)
+            bm25_metas.pop(notebook_id, None)
             return
         all_data = collection.get(include=["documents", "metadatas"])
         docs = all_data['documents']
@@ -255,7 +273,7 @@ def get_time_for_char_position(position, segment_ranges, edge="start"):
         return segment_ranges[0]["start"] if edge == "start" else segment_ranges[0]["end"]
     return segment_ranges[-1]["start"] if edge == "start" else segment_ranges[-1]["end"]
 
-def build_chunk_metadata(chunks, timed_segments, source_filename):
+def build_chunk_metadata(chunks, timed_segments, source_filename, source_id=None):
     """將 chunk 依文字位置對應回 Whisper 時間戳，供來源引用使用"""
     transcript_text = "".join(segment["text"] for segment in timed_segments)
     segment_ranges = []
@@ -284,6 +302,7 @@ def build_chunk_metadata(chunks, timed_segments, source_filename):
         end_time = get_time_for_char_position(max(found_at, chunk_end - 1), segment_ranges, edge="end")
         metadata_list.append({
             "source": source_filename,
+            "source_id": source_id or "",
             "chunk_index": i,
             "start_time": float(start_time) if start_time is not None else -1.0,
             "end_time": float(end_time) if end_time is not None else -1.0,
@@ -292,6 +311,71 @@ def build_chunk_metadata(chunks, timed_segments, source_filename):
         search_position = chunk_end
 
     return metadata_list
+
+def chunk_transcript_text(transcript_text):
+    """依目前 RAG 規則切分逐字稿，供上傳與重新索引共用"""
+    if len(transcript_text) > 200:
+        return semantic_chunk(
+            transcript_text,
+            embeddings_model,
+            similarity_threshold=0.65,
+            max_chunk_size=600,
+            min_chunk_size=80
+        )
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", "。", "！", "？", "，", " "]
+    )
+    return text_splitter.split_text(transcript_text)
+
+def delete_source_chunks(collection, source_id):
+    """刪除指定來源的舊向量片段，不直接操作 ChromaDB 檔案"""
+    try:
+        collection.delete(where={"source_id": source_id})
+        return
+    except Exception:
+        pass
+
+    try:
+        existing = collection.get(include=["metadatas"])
+        ids_to_delete = [
+            doc_id
+            for doc_id, metadata in zip(existing.get("ids", []), existing.get("metadatas", []))
+            if metadata and metadata.get("source_id") == source_id
+        ]
+        if ids_to_delete:
+            collection.delete(ids=ids_to_delete)
+    except Exception:
+        pass
+
+def index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments):
+    """將單一來源逐字稿重新切分、向量化並寫回 ChromaDB"""
+    transcript_text = transcript_text.strip()
+    if not transcript_text:
+        raise ValueError("逐字稿不可為空")
+
+    chunks = chunk_transcript_text(transcript_text)
+    if not chunks:
+        raise ValueError("逐字稿內容不足，無法建立索引")
+
+    chunk_metadatas = build_chunk_metadata(chunks, timed_segments, filename, source_id)
+    vectors = [embeddings_model.encode(chunk).tolist() for chunk in chunks]
+
+    collection = get_notebook_collection(notebook_id)
+    delete_source_chunks(collection, source_id)
+    for i, chunk in enumerate(chunks):
+        chunk_id = f"{source_id}_chunk_{i}_{uuid.uuid4().hex[:6]}"
+        collection.add(
+            ids=[chunk_id],
+            embeddings=[vectors[i]],
+            documents=[chunk],
+            metadatas=[chunk_metadatas[i]]
+        )
+
+    rebuild_bm25_index(notebook_id)
+    return len(chunks)
 
 def get_reference_label(metadata):
     """將 metadata 轉成使用者看得懂的來源引用文字"""
@@ -420,6 +504,9 @@ def save_suggested_questions(notebook_id, source_filename, questions):
 class NotebookUpdate(BaseModel):
     name: str
 
+class TranscriptUpdateRequest(BaseModel):
+    transcript_text: str
+
 @app.get("/api/notebooks/")
 async def get_notebooks():
     conn = sqlite3.connect("notebooks.db")
@@ -472,8 +559,32 @@ async def get_notebook_details(notebook_id: str):
     cursor = conn.cursor()
     
     # 取得來源清單
-    cursor.execute("SELECT id, filename, added_at FROM sources WHERE notebook_id = ? ORDER BY added_at ASC", (notebook_id,))
-    sources = [{"id": r[0], "filename": r[1], "added_at": r[2]} for r in cursor.fetchall()]
+    cursor.execute(
+        """
+        SELECT
+            id,
+            filename,
+            added_at,
+            transcript_updated_at,
+            indexed_at,
+            CASE WHEN TRIM(COALESCE(transcript_text, '')) != '' THEN 1 ELSE 0 END
+        FROM sources
+        WHERE notebook_id = ?
+        ORDER BY added_at ASC
+        """,
+        (notebook_id,)
+    )
+    sources = [
+        {
+            "id": r[0],
+            "filename": r[1],
+            "added_at": r[2],
+            "transcript_updated_at": r[3],
+            "indexed_at": r[4],
+            "has_transcript": bool(r[5])
+        }
+        for r in cursor.fetchall()
+    ]
     
     # 取得對話紀錄
     cursor.execute("SELECT sender, text, created_at FROM messages WHERE notebook_id = ? ORDER BY id ASC", (notebook_id,))
@@ -515,6 +626,111 @@ async def mark_suggested_question_used(notebook_id: str, question_id: int):
     conn.close()
     return {"status": "success"}
 
+@app.get("/api/notebooks/{notebook_id}/sources/{source_id}/transcript")
+async def get_source_transcript(notebook_id: str, source_id: str):
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, filename, transcript_text, transcript_updated_at, indexed_at
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="找不到指定來源")
+
+    transcript_text = row[2] or ""
+    return {
+        "status": "success",
+        "source": {
+            "id": row[0],
+            "filename": row[1],
+            "transcript_text": transcript_text,
+            "has_transcript": bool(transcript_text.strip()),
+            "transcript_updated_at": row[3],
+            "indexed_at": row[4]
+        }
+    }
+
+@app.put("/api/notebooks/{notebook_id}/sources/{source_id}/transcript")
+async def update_source_transcript(notebook_id: str, source_id: str, request: TranscriptUpdateRequest):
+    transcript_text = request.transcript_text.strip()
+    if not transcript_text:
+        return {"status": "error", "message": "逐字稿不可為空。"}
+
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT filename, transcript_text, timed_segments
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="找不到指定來源")
+
+    filename, existing_transcript, timed_segments_json = row
+    if not existing_transcript or not existing_transcript.strip():
+        return {"status": "error", "message": "此來源尚未保存逐字稿，請重新上傳音檔後再編輯。"}
+
+    if transcript_text == existing_transcript.strip():
+        return {
+            "status": "success",
+            "changed": False,
+            "message": "逐字稿沒有變更，不需要重新索引。",
+            "source": {
+                "id": source_id,
+                "filename": filename,
+                "has_transcript": True
+            },
+            "chunk_count": 0
+        }
+
+    try:
+        timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
+        chunk_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments)
+    except Exception as e:
+        return {"status": "error", "message": f"重新索引失敗: {str(e)}"}
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect("notebooks.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE sources
+        SET transcript_text = ?, transcript_updated_at = ?, indexed_at = ?
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (transcript_text, now, now, source_id, notebook_id)
+    )
+    cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "success",
+        "changed": True,
+        "message": f"逐字稿已更新，並重新建立 {chunk_count} 個知識片段。",
+        "source": {
+            "id": source_id,
+            "filename": filename,
+            "has_transcript": True,
+            "transcript_updated_at": now,
+            "indexed_at": now
+        },
+        "chunk_count": chunk_count
+    }
+
 @app.delete("/api/notebooks/{notebook_id}")
 async def delete_notebook(notebook_id: str):
     conn = sqlite3.connect("notebooks.db")
@@ -543,6 +759,7 @@ async def delete_notebook(notebook_id: str):
 
 @app.post("/upload-audio/")
 async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...)):
+    source_id = str(uuid.uuid4())
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -582,30 +799,33 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
     try:
         # 1. 將原始逐字稿進行語意切分並寫入向量資料庫
         # 優先使用語意切分，當文字太短時 fallback 到固定切分
-        if len(transcript_text) > 200:
-            chunks = semantic_chunk(transcript_text, embeddings_model, similarity_threshold=0.65, max_chunk_size=600, min_chunk_size=80)
-        else:
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", "。", "！", "？", "，", " "])
-            chunks = text_splitter.split_text(transcript_text)
-
-        collection = get_notebook_collection(notebook_id)
-        chunk_metadatas = build_chunk_metadata(chunks, timed_segments, file.filename)
-        for i, chunk in enumerate(chunks):
-            vector = embeddings_model.encode(chunk).tolist()
-            chunk_id = f"{file.filename}_chunk_{i}_{uuid.uuid4().hex[:6]}"
-            collection.add(ids=[chunk_id], embeddings=[vector], documents=[chunk], metadatas=[chunk_metadatas[i]])
+        chunks_count = index_source_transcript(notebook_id, source_id, file.filename, transcript_text, timed_segments)
         
-        # 同步重建該筆記本的 BM25 索引
-        rebuild_bm25_index(notebook_id)
-            
         # 更新 SQLite 紀錄
         conn = sqlite3.connect("notebooks.db")
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO sources (id, notebook_id, filename, added_at) VALUES (?, ?, ?, ?)", (str(uuid.uuid4()), notebook_id, file.filename, now))
+        cursor.execute(
+            """
+            INSERT INTO sources
+                (id, notebook_id, filename, added_at, transcript_text, timed_segments, transcript_updated_at, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id,
+                notebook_id,
+                file.filename,
+                now,
+                transcript_text,
+                json.dumps(timed_segments, ensure_ascii=False),
+                now,
+                now
+            )
+        )
         cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
         conn.commit()
         conn.close()
+        source_saved_at = now
     except Exception as e:
         return {"status": "error", "message": f"寫入向量資料庫失敗: {str(e)}"}
     finally:
@@ -647,10 +867,18 @@ async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...
     return {
         "filename": file.filename, 
         "status": "success",
-        "message": f"✅ 成功存入 {len(chunks)} 個知識片段。",
+        "message": f"✅ 成功存入 {chunks_count} 個知識片段。",
         "raw_transcript": transcript_text,
         "structured_knowledge": structured_knowledge,
-        "suggested_questions": saved_suggested_questions
+        "suggested_questions": saved_suggested_questions,
+        "source": {
+            "id": source_id,
+            "filename": file.filename,
+            "added_at": source_saved_at,
+            "has_transcript": True,
+            "transcript_updated_at": source_saved_at,
+            "indexed_at": source_saved_at
+        }
     }
 
 
