@@ -1,4 +1,4 @@
-# VoiceRAG 檢索增強生成 (RAG) 強化計畫書
+# VoiceRAG 強化計畫書
 
 ---
 
