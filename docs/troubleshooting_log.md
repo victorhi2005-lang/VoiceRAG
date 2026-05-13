@@ -4,7 +4,7 @@
 
 ---
 
-## 1. FlagEmbedding 與 Transformers 版本不相容 (Tokenizer 錯誤)
+## 1. FlagEmbedding 與 Transformers 版本不相容
 
 ###  錯誤現象
 在實作 Phase 5 優化時，系統在執行 `ask_question` 進行問答精排 (Reranking) 時拋出以下錯誤：
@@ -44,7 +44,7 @@ reranker = CrossEncoder('BAAI/bge-reranker-v2-m3', device='cuda')
 
 ---
 
-## 2. Windows 環境下 PyTorch 與 CTranslate2 的無聲崩潰 (Silent Crash)
+## 2. Windows 環境下 PyTorch 與 CTranslate2 的崩潰
 
 ###  錯誤現象
 在修改完模型載入方式，並透過 `uvicorn main:app --reload` 重新啟動伺服器時，終端機顯示：
@@ -54,7 +54,7 @@ INFO:     Started reloader process [12900] using WatchFiles
 然後游標就卡在那裡，**沒有跳出任何錯誤訊息，也沒有啟動伺服器** (Exit Code 1)。
 
 ###  問題原因
-這是 Windows 作業系統下常見的**「動態連結函式庫 (DLL) 衝突 / OpenMP 衝突」**，也被稱為無聲崩潰。
+這是 Windows 作業系統下常見的**「動態連結函式庫 (DLL) 衝突 / OpenMP 衝突」**
 
 在我們的環境中，有兩個底層極其龐大的 AI 函式庫：
 1. **PyTorch** (由 `sentence_transformers` 呼叫，用來跑 BGE-M3)
@@ -81,4 +81,72 @@ from faster_whisper import WhisperModel
 import ollama
 ```
 
-藉由讓 `sentence_transformers` 優先載入，PyTorch 能夠正確初始化其 CUDA 環境，後續再載入 `faster_whisper` 時就能與之和平共存，完美解決了無聲崩潰的問題。同時，我們也補上了 `--force-reinstall` 重新安裝了 `torch-2.11.0+cu128` 以匹配 RTX 5080 的 SM_120 (Compute Capability 12.0) 架構，確保 GPU 加速能滿載運行。
+藉由讓 `sentence_transformers` 優先載入，PyTorch 能夠正確初始化其 CUDA 環境，後續再載入 `faster_whisper` 時就能與之和平共存，完美解決了無聲崩潰的問題。同時，我們也補上了 `--force-reinstall` 重新安裝了 `torch-2.11.0+cu128` 以匹配 RTX 5080 的 SM_120 (Compute Capability 12.0) 架構，提高 GPU 的相容性與穩定性。
+
+---
+
+## 3. P5 拆分 `main.py` 後的 Pyrefly 型別紅線
+
+###  錯誤現象
+在 P5 將 `backend/main.py` 保守拆分成 `db.py`、`models.py`、`rag_service.py`、`audio_service.py`、`schemas.py` 後，程式邏輯可以通過 Python 語法檢查，但 VS Code / Pyrefly 出現多個紅線警告：
+
+```text
+Type `None` is not iterable
+Cannot set item in `dict[Unknown, int]`
+No matching overload found for function `CrossEncoder.predict`
+```
+
+主要集中在 `rag_service.py`：
+- `collection.get(include=["documents", "metadatas"])` 回傳的 `documents` 被 Pyrefly 判斷成 `list[str] | None`。
+- RRF 分數字典 `scores = {}` 被推論成只能放整數，後續寫入浮點數分數時被標紅。
+- ChromaDB `query()` 回傳的 `documents`、`metadatas` 型別太寬，Pyrefly 無法確定可安全索引。
+- `sentence-transformers` 的 `CrossEncoder.predict()` 實際支援 query/document pair，但型別 overload 很複雜，Pyrefly 無法正確匹配。
+
+###  問題原因
+這次問題的本質不是 RAG 邏輯壞掉，而是「拆分後型別檢查器看不到足夠上下文」：
+
+1. ChromaDB、Sentence Transformers 這類 AI / 向量資料庫套件的回傳型別通常很寬，可能是 `None`、巢狀 list、numpy array 或動態 dict。
+2. 原本所有邏輯放在 `main.py` 時，型別檢查器比較少追蹤跨模組資料流；拆成 service 後，Pyrefly 會更嚴格檢查每個函式的輸入輸出。
+3. `CrossEncoder.predict()` 的型別標註不完全符合實際常見用法，因此需要在很小的範圍內用 `cast(Any, ...)` 告訴型別檢查器這個第三方呼叫是刻意放寬。
+
+###  解決方案
+針對 Pyrefly 型別紅線，採用「補明確型別，不改行為」的方式：
+
+```python
+from collections.abc import Iterable
+from typing import Any, cast
+
+Metadata = dict[str, Any]
+
+bm25_indices: dict[str, Any] = {}
+bm25_docs: dict[str, list[str]] = {}
+bm25_metas: dict[str, list[Metadata]] = {}
+```
+
+對 ChromaDB 回傳值先做防呆與型別轉換：
+
+```python
+all_data = cast(dict[str, Any], collection.get(include=["documents", "metadatas"]))
+docs = cast(list[str], all_data.get("documents") or [])
+metadatas = cast(list[Metadata], all_data.get("metadatas") or [{} for _ in docs])
+```
+
+對 RRF 分數明確標示為浮點數：
+
+```python
+scores: dict[str, float] = {}
+scores[doc] = scores.get(doc, 0.0) + 1.0 / (k + rank + 1)
+```
+
+對 Reranker 呼叫只在第三方函式邊界放寬型別：
+
+```python
+pairs: list[tuple[str, str]] = [(question, doc) for doc in fused_candidates]
+raw_scores = reranker.predict(cast(Any, pairs))
+```
+
+###  後續注意事項
+- 拆分後端模組時，優先保留原本 API 路徑與資料流，不要同時重構功能邏輯。
+- 對第三方 AI 套件的型別錯誤，先判斷是「真的資料可能出錯」還是「型別檢查器看不懂動態回傳」。
+- `cast(Any, ...)` 應只放在第三方套件邊界，不要大範圍關閉型別檢查。
+- 若 VS Code 顯示大量套件 import 紅線，先檢查 Pyrefly / Python interpreter 是否指向 `backend/venv/Scripts/python.exe`，不要直接加 `# pyrefly: ignore` 掩蓋問題。

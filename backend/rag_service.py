@@ -497,8 +497,6 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         retrieved_context = "\n\n".join(context_blocks)
 
         source_files = list(dict.fromkeys(reference["source"] for reference in references))
-        source_info = "；".join(reference["label"] for reference in references) if references else "未知來源"
-
         history = get_recent_messages(notebook_id, limit=6)
         history_text = ""
         if history:
@@ -516,8 +514,9 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
 1.【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字！
 2. 如果【參考資料】中有答案，請用條理清晰、分點說明的方式回答。
 3. 如果【參考資料】無法回答問題，請誠實回答：「根據目前資料庫的錄音紀錄，並未提及此資訊」，【絕對不可以】編造答案。
-4. 回答時請注明參考來源檔案：{source_info}。
-5. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。"""
+4. 回答正文不要自行輸出「參考來源」段落；系統會在最後自動附上來源。
+5. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
+6. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。"""
 
         if history_text:
             rag_prompt += f"\n\n【歷史對話】：\n{history_text}"

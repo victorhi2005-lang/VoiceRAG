@@ -36,6 +36,67 @@
         .dropdown-content {
             display: none;
         }
+
+        .markdown-body {
+            white-space: normal;
+        }
+
+        .markdown-body p {
+            margin: 0 0 0.75rem;
+        }
+
+        .markdown-body p:last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-body ul,
+        .markdown-body ol {
+            margin: 0.35rem 0 0.8rem 1.25rem;
+        }
+
+        .markdown-body ul {
+            list-style: disc;
+        }
+
+        .markdown-body ol {
+            list-style: decimal;
+        }
+
+        .markdown-body li {
+            margin: 0.2rem 0;
+        }
+
+        .markdown-body li p {
+            margin: 0.35rem 0 0.55rem;
+        }
+
+        .markdown-body strong {
+            color: #f3f4f6;
+            font-weight: 700;
+        }
+
+        .markdown-body em {
+            color: #d1d5db;
+        }
+
+        .markdown-body code {
+            background: #2d2f34;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #e5e7eb;
+            padding: 0.08rem 0.3rem;
+        }
+
+        .markdown-body h3,
+        .markdown-body h4 {
+            color: #f3f4f6;
+            font-weight: 700;
+            margin: 0.2rem 0 0.7rem;
+        }
+
+        .markdown-spacer {
+            height: 0.45rem;
+        }
     </style>
 </head>
 
@@ -211,6 +272,98 @@
         let currentTranscriptSourceId = null;
         let currentTranscriptOriginalText = '';
 
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function renderInlineMarkdown(text) {
+            return text
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+                .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+        }
+
+        function renderSafeMarkdown(markdown) {
+            const escapedText = escapeHtml(markdown);
+            const lines = escapedText.replace(/\r\n/g, '\n').split('\n');
+            let html = '';
+            let activeList = null;
+            let activeListItem = false;
+
+            const isSourceHeader = (text) => /^參考來源[:：]\s*$/.test(text);
+
+            const closeListItem = () => {
+                if (!activeListItem) return;
+                html += '</li>';
+                activeListItem = false;
+            };
+
+            const closeList = () => {
+                closeListItem();
+                if (!activeList) return;
+                html += `</${activeList}>`;
+                activeList = null;
+            };
+
+            const startListItem = (type, content) => {
+                if (activeList !== type) {
+                    closeList();
+                    html += `<${type}>`;
+                    activeList = type;
+                }
+                closeListItem();
+                html += `<li>${renderInlineMarkdown(content)}`;
+                activeListItem = true;
+            };
+
+            lines.forEach(line => {
+                const trimmed = line.trim();
+
+                if (!trimmed) {
+                    if (!activeList) {
+                        html += '<div class="markdown-spacer"></div>';
+                    }
+                    return;
+                }
+
+                const headingMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+                if (headingMatch) {
+                    closeList();
+                    const tag = headingMatch[1].length >= 3 ? 'h4' : 'h3';
+                    html += `<${tag}>${renderInlineMarkdown(headingMatch[2])}</${tag}>`;
+                    return;
+                }
+
+                const unorderedMatch = trimmed.match(/^[-*]\s+(.+)$/);
+                if (unorderedMatch) {
+                    startListItem('ul', unorderedMatch[1]);
+                    return;
+                }
+
+                const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+                if (orderedMatch) {
+                    startListItem('ol', orderedMatch[1]);
+                    return;
+                }
+
+                if (activeList && activeListItem && !isSourceHeader(trimmed)) {
+                    html += `<p>${renderInlineMarkdown(trimmed)}</p>`;
+                } else {
+                    closeList();
+                    html += `<p>${renderInlineMarkdown(trimmed)}</p>`;
+                }
+            });
+
+            closeList();
+            return html || '<p></p>';
+        }
+
         // 頁面載入時，獲取筆記本列表
         document.addEventListener('DOMContentLoaded', fetchNotebooks);
 
@@ -249,31 +402,62 @@
                     }
                 };
 
-                card.innerHTML = `
-                    <div class="flex justify-between items-start">
-                        <div class="text-4xl">${nb.icon}</div>
-                        <!-- 右上角選項選單 -->
-                        <div class="dropdown relative">
-                            <button onclick="toggleDropdown(event, 'dropdown-${nb.id}')" class="text-gray-400 hover:text-white p-1 rounded-full hover:bg-[#444]">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 18.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" /></svg>
-                            </button>
-                            <div id="dropdown-${nb.id}" class="dropdown-content absolute right-0 mt-1 w-32 bg-[#1e1f22] border border-[#333] rounded-lg shadow-xl z-30 py-1">
-                                <button onclick="openRenameModal('${nb.id}', '${nb.name}')" class="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white flex items-center">
-                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                                    編輯標題
-                                </button>
-                                <button onclick="deleteNotebook('${nb.id}')" class="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#333] hover:text-red-300 flex items-center">
-                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                    刪除
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    <div>
-                        <h3 class="text-lg font-semibold text-gray-200 truncate mb-1">${nb.name}</h3>
-                        <p class="text-xs text-gray-500">${dateStr} · ${nb.source_count} 個來源</p>
-                    </div>
-                `;
+                const header = document.createElement('div');
+                header.className = 'flex justify-between items-start';
+
+                const icon = document.createElement('div');
+                icon.className = 'text-4xl';
+                icon.textContent = nb.icon || '📒';
+
+                const dropdown = document.createElement('div');
+                dropdown.className = 'dropdown relative';
+
+                const dropdownId = `dropdown-${nb.id}`;
+                const menuButton = document.createElement('button');
+                menuButton.className = 'text-gray-400 hover:text-white p-1 rounded-full hover:bg-[#444]';
+                menuButton.onclick = (event) => toggleDropdown(event, dropdownId);
+                menuButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 18.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" /></svg>';
+
+                const dropdownContent = document.createElement('div');
+                dropdownContent.id = dropdownId;
+                dropdownContent.className = 'dropdown-content absolute right-0 mt-1 w-32 bg-[#1e1f22] border border-[#333] rounded-lg shadow-xl z-30 py-1';
+
+                const renameButton = document.createElement('button');
+                renameButton.className = 'w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white flex items-center';
+                renameButton.innerHTML = '<svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg><span>編輯標題</span>';
+                renameButton.onclick = (event) => {
+                    event.stopPropagation();
+                    openRenameModal(nb.id, nb.name);
+                };
+
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#333] hover:text-red-300 flex items-center';
+                deleteButton.innerHTML = '<svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg><span>刪除</span>';
+                deleteButton.onclick = (event) => {
+                    event.stopPropagation();
+                    deleteNotebook(nb.id);
+                };
+
+                dropdownContent.appendChild(renameButton);
+                dropdownContent.appendChild(deleteButton);
+                dropdown.appendChild(menuButton);
+                dropdown.appendChild(dropdownContent);
+                header.appendChild(icon);
+                header.appendChild(dropdown);
+
+                const body = document.createElement('div');
+                const title = document.createElement('h3');
+                title.className = 'text-lg font-semibold text-gray-200 truncate mb-1';
+                title.textContent = nb.name;
+
+                const meta = document.createElement('p');
+                meta.className = 'text-xs text-gray-500';
+                meta.textContent = `${dateStr} · ${nb.source_count} 個來源`;
+
+                body.appendChild(title);
+                body.appendChild(meta);
+                card.appendChild(header);
+                card.appendChild(body);
                 grid.appendChild(card);
             });
         }
@@ -935,15 +1119,21 @@
 
             if (sender === 'User') {
                 // 使用者訊息：深色泡泡靠右
-                div.innerHTML = `
-                    <div class="bg-[#333] px-5 py-3.5 rounded-3xl text-gray-200 whitespace-pre-wrap max-w-2xl ml-auto text-base border border-[#444] shadow-md">${text}</div>
-                `;
+                const bubble = document.createElement('div');
+                bubble.className = 'bg-[#333] px-5 py-3.5 rounded-3xl text-gray-200 whitespace-pre-wrap max-w-2xl ml-auto text-base border border-[#444] shadow-md';
+                bubble.textContent = text;
+                div.appendChild(bubble);
             } else {
                 // AI 訊息：靠左顯示文字
                 const pulseClass = animate ? 'animate-pulse' : '';
-                div.innerHTML = `
-                    <div class="text-gray-300 pt-2 whitespace-pre-wrap leading-relaxed max-w-3xl text-base ${pulseClass}">${text}</div>
-                `;
+                const content = document.createElement('div');
+                content.className = `text-gray-300 pt-2 leading-relaxed max-w-3xl text-base ${pulseClass} ${animate ? 'whitespace-pre-wrap' : 'markdown-body'}`;
+                if (animate) {
+                    content.textContent = text;
+                } else {
+                    content.innerHTML = renderSafeMarkdown(text);
+                }
+                div.appendChild(content);
             }
 
             chatHistory.appendChild(div);
