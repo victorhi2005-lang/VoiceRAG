@@ -143,6 +143,34 @@
             </div>
 
             <div class="p-4 flex-1 overflow-y-auto space-y-5">
+                <!-- 直接錄音 -->
+                <div class="border border-[#333] bg-[#222428] rounded-lg p-3 space-y-3">
+                    <div class="flex items-center justify-between gap-3">
+                        <span class="text-sm font-semibold text-gray-300">直接錄音</span>
+                        <span id="recordingTimer" class="text-xs text-gray-500 tabular-nums">00:00</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button id="startRecordBtn" type="button" onclick="startRecording()"
+                            class="flex-1 flex items-center justify-center gap-2 py-2 border border-[#555] rounded-lg text-sm text-gray-300 hover:bg-[#333] hover:text-white transition">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                                stroke="currentColor" class="w-4 h-4">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M12 18.75a6 6 0 0 0 6-6v-1.5M12 18.75a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 0 3-3V5.25a3 3 0 1 0-6 0v7.5a3 3 0 0 0 3 3Z" />
+                            </svg>
+                            開始錄音
+                        </button>
+                        <button id="stopRecordBtn" type="button" onclick="stopRecording()" disabled
+                            class="flex-1 flex items-center justify-center gap-2 py-2 border border-red-500/50 rounded-lg text-sm text-red-200 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"
+                                class="w-3.5 h-3.5">
+                                <path d="M6 6h12v12H6z" />
+                            </svg>
+                            停止
+                        </button>
+                    </div>
+                    <p id="recordingStatus" class="text-xs text-gray-500 min-h-[1rem]">錄音完成後會自動加入來源列表。</p>
+                </div>
+
                 <!-- 新增來源按鈕 -->
                 <label for="audioFile"
                     class="flex items-center justify-center w-full py-2 border border-[#555] rounded-lg text-base text-gray-300 hover:bg-[#333] hover:text-white cursor-pointer transition">
@@ -223,7 +251,7 @@
     <!-- 用於修改名稱的隱藏 Dialog (簡易版) -->
     <div id="renameModal" class="fixed inset-0 z-50 flex items-center justify-center hidden bg-black bg-opacity-50">
         <div class="bg-[#1e1f22] border border-[#333] rounded-xl p-6 w-96 shadow-2xl">
-            <h3 class="text-lg font-semibold text-gray-200 mb-4">重新命名筆記本</h3>
+            <h3 id="renameModalTitle" class="text-lg font-semibold text-gray-200 mb-4">重新命名筆記本</h3>
             <input type="text" id="renameInput"
                 class="w-full bg-[#131314] border border-[#444] rounded-lg px-3 py-2 text-gray-200 focus:outline-none focus:border-gray-400 mb-4">
             <div class="flex justify-end space-x-3">
@@ -269,8 +297,20 @@
         // 全域狀態：當前選擇的筆記本 ID
         let currentNotebookId = null;
         let renameTargetId = null;
+        let renameMode = 'notebook';
         let currentTranscriptSourceId = null;
         let currentTranscriptOriginalText = '';
+        let activeAudio = null;
+        let activeAudioSourceId = null;
+        let activeAudioButton = null;
+        let activeAudioProgressPanel = null;
+        let activeAudioSlider = null;
+        let activeAudioTimeLabel = null;
+        let mediaRecorder = null;
+        let recordingStream = null;
+        let recordedChunks = [];
+        let recordingTimer = null;
+        let recordingStartedAt = 0;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -362,6 +402,34 @@
 
             closeList();
             return html || '<p></p>';
+        }
+
+        function renderReferences(references) {
+            const validReferences = (references || []).filter(ref => ref && ref.source_id);
+            if (validReferences.length === 0) return null;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mt-6 text-sm text-gray-400';
+
+            const title = document.createElement('div');
+            title.className = 'mb-2';
+            title.textContent = '參考來源：';
+            wrapper.appendChild(title);
+
+            const list = document.createElement('div');
+            list.className = 'space-y-1';
+
+            validReferences.forEach((reference, index) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'block text-left text-gray-300 underline underline-offset-4 decoration-gray-500 hover:text-white hover:decoration-blue-300 transition';
+                button.textContent = `${index + 1}. ${reference.source || reference.label || '未知來源'}`;
+                button.onclick = () => openTranscriptModal(reference.source_id);
+                list.appendChild(button);
+            });
+
+            wrapper.appendChild(list);
+            return wrapper;
         }
 
         // 頁面載入時，獲取筆記本列表
@@ -463,35 +531,211 @@
         }
 
         function createSourceElement(source) {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'w-full flex items-center justify-between text-base text-gray-300 p-2 rounded hover:bg-[#333] transition cursor-pointer text-left';
-            button.onclick = () => openTranscriptModal(source.id);
+            const item = document.createElement('div');
+            item.id = `source-item-${source.id}`;
+            item.className = 'w-full text-base text-gray-300 p-1 rounded hover:bg-[#333] transition space-y-1';
 
-            const content = document.createElement('div');
-            content.className = 'flex items-center space-x-2 overflow-hidden min-w-0';
+            const row = document.createElement('div');
+            row.className = 'w-full flex items-center gap-1';
 
-            const icon = document.createElement('span');
-            icon.className = 'text-blue-500 font-bold shrink-0';
-            icon.textContent = '▶';
+            const playButton = document.createElement('button');
+            playButton.type = 'button';
+            playButton.className = 'w-8 h-8 rounded-md flex items-center justify-center text-blue-400 hover:bg-[#3a3a3a] hover:text-blue-200 shrink-0 transition';
+            playButton.title = '播放音檔';
+            playButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" class="w-4 h-4"><path d="M8 5.14v13.72c0 .8.89 1.27 1.55.82l10.04-6.86a1 1 0 0 0 0-1.64L9.55 4.32A1 1 0 0 0 8 5.14Z"/></svg>';
+            playButton.onclick = (event) => {
+                event.stopPropagation();
+                toggleSourceAudio(source, playButton);
+            };
+
+            const openButton = document.createElement('button');
+            openButton.type = 'button';
+            openButton.className = 'flex-1 flex items-center justify-between text-left overflow-hidden min-w-0 px-1 py-1 rounded hover:text-white transition';
+            openButton.onclick = () => openTranscriptModal(source.id);
+
+            const nameWrap = document.createElement('div');
+            nameWrap.className = 'flex items-center space-x-2 overflow-hidden min-w-0';
 
             const name = document.createElement('span');
             name.className = 'truncate';
+            name.dataset.sourceName = source.id;
             name.title = source.filename;
             name.textContent = source.filename;
 
-            content.appendChild(icon);
-            content.appendChild(name);
-            button.appendChild(content);
+            nameWrap.appendChild(name);
+            openButton.appendChild(nameWrap);
 
             if (!source.has_transcript) {
                 const badge = document.createElement('span');
                 badge.className = 'ml-2 text-xs text-amber-300 border border-amber-500/40 rounded px-2 py-0.5 shrink-0';
                 badge.textContent = '無逐字稿';
-                button.appendChild(badge);
+                openButton.appendChild(badge);
             }
 
-            return button;
+            const renameButton = document.createElement('button');
+            renameButton.type = 'button';
+            renameButton.className = 'w-8 h-8 rounded-md flex items-center justify-center text-gray-500 hover:bg-[#3a3a3a] hover:text-gray-200 shrink-0 transition';
+            renameButton.title = '修改檔名';
+            renameButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" /></svg>';
+            renameButton.onclick = (event) => {
+                event.stopPropagation();
+                openSourceRenameModal(source);
+            };
+
+            const progressPanel = document.createElement('div');
+            progressPanel.className = 'hidden pl-9 pr-10 pb-1 space-y-1';
+            progressPanel.dataset.audioProgress = source.id;
+
+            const timeLabel = document.createElement('div');
+            timeLabel.className = 'text-xs text-gray-500 tabular-nums';
+            timeLabel.dataset.audioTime = source.id;
+            timeLabel.textContent = '00:00 / 00:00';
+
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = '0';
+            slider.max = '0';
+            slider.step = '0.1';
+            slider.value = '0';
+            slider.disabled = true;
+            slider.dataset.audioSlider = source.id;
+            slider.className = 'w-full h-1 accent-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50';
+            slider.oninput = () => {
+                if (!activeAudio || activeAudioSourceId !== source.id || !Number.isFinite(activeAudio.duration)) return;
+                activeAudio.currentTime = Number(slider.value);
+                updateActiveAudioProgress();
+            };
+
+            progressPanel.appendChild(timeLabel);
+            progressPanel.appendChild(slider);
+
+            row.appendChild(playButton);
+            row.appendChild(openButton);
+            row.appendChild(renameButton);
+            item.appendChild(row);
+            item.appendChild(progressPanel);
+            return item;
+        }
+
+        function formatAudioTime(seconds) {
+            if (!Number.isFinite(seconds) || seconds < 0) {
+                return '00:00';
+            }
+            const totalSeconds = Math.floor(seconds);
+            const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+            const secs = String(totalSeconds % 60).padStart(2, '0');
+            return `${minutes}:${secs}`;
+        }
+
+        function updateActiveAudioProgress() {
+            if (!activeAudio || !activeAudioSlider || !activeAudioTimeLabel) return;
+
+            const duration = Number.isFinite(activeAudio.duration) ? activeAudio.duration : 0;
+            const currentTime = Number.isFinite(activeAudio.currentTime) ? activeAudio.currentTime : 0;
+            activeAudioSlider.value = String(Math.min(currentTime, duration || currentTime));
+            activeAudioTimeLabel.textContent = `${formatAudioTime(currentTime)} / ${formatAudioTime(duration)}`;
+        }
+
+        function showActiveAudioProgress(sourceId, audio) {
+            activeAudioProgressPanel = document.querySelector(`[data-audio-progress="${sourceId}"]`);
+            activeAudioSlider = document.querySelector(`[data-audio-slider="${sourceId}"]`);
+            activeAudioTimeLabel = document.querySelector(`[data-audio-time="${sourceId}"]`);
+
+            if (activeAudioProgressPanel) {
+                activeAudioProgressPanel.classList.remove('hidden');
+            }
+            if (activeAudioSlider) {
+                activeAudioSlider.value = '0';
+                activeAudioSlider.max = '0';
+                activeAudioSlider.disabled = true;
+            }
+            if (activeAudioTimeLabel) {
+                activeAudioTimeLabel.textContent = '00:00 / 00:00';
+            }
+
+            audio.onloadedmetadata = () => {
+                if (activeAudio !== audio || activeAudioSourceId !== sourceId) return;
+                if (!activeAudioSlider) return;
+                const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+                activeAudioSlider.max = String(duration);
+                activeAudioSlider.disabled = duration <= 0;
+                updateActiveAudioProgress();
+            };
+            audio.ontimeupdate = () => {
+                if (activeAudio !== audio || activeAudioSourceId !== sourceId) return;
+                updateActiveAudioProgress();
+            };
+        }
+
+        function resetActiveAudioButton() {
+            if (activeAudioButton) {
+                activeAudioButton.title = '播放音檔';
+                activeAudioButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" class="w-4 h-4"><path d="M8 5.14v13.72c0 .8.89 1.27 1.55.82l10.04-6.86a1 1 0 0 0 0-1.64L9.55 4.32A1 1 0 0 0 8 5.14Z"/></svg>';
+            }
+            if (activeAudioProgressPanel) {
+                activeAudioProgressPanel.classList.add('hidden');
+            }
+            if (activeAudioSlider) {
+                activeAudioSlider.value = '0';
+                activeAudioSlider.disabled = true;
+            }
+            if (activeAudioTimeLabel) {
+                activeAudioTimeLabel.textContent = '00:00 / 00:00';
+            }
+            activeAudioButton = null;
+            activeAudioProgressPanel = null;
+            activeAudioSlider = null;
+            activeAudioTimeLabel = null;
+        }
+
+        async function toggleSourceAudio(source, button) {
+            if (!currentNotebookId || !source.id) return;
+
+            if (activeAudio && activeAudioSourceId === source.id && !activeAudio.paused) {
+                activeAudio.pause();
+                activeAudio.currentTime = 0;
+                activeAudio = null;
+                activeAudioSourceId = null;
+                resetActiveAudioButton();
+                return;
+            }
+
+            if (activeAudio) {
+                activeAudio.pause();
+                activeAudio.currentTime = 0;
+                activeAudio = null;
+                activeAudioSourceId = null;
+                resetActiveAudioButton();
+            }
+
+            const audio = new Audio(`/api/notebooks/${currentNotebookId}/sources/${source.id}/audio`);
+            activeAudio = audio;
+            activeAudioSourceId = source.id;
+            activeAudioButton = button;
+            button.title = '停止播放';
+            button.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" class="w-4 h-4"><path d="M6 5.25A1.25 1.25 0 0 1 7.25 4h1.5A1.25 1.25 0 0 1 10 5.25v13.5A1.25 1.25 0 0 1 8.75 20h-1.5A1.25 1.25 0 0 1 6 18.75V5.25Zm8 0A1.25 1.25 0 0 1 15.25 4h1.5A1.25 1.25 0 0 1 18 5.25v13.5A1.25 1.25 0 0 1 16.75 20h-1.5A1.25 1.25 0 0 1 14 18.75V5.25Z"/></svg>';
+            showActiveAudioProgress(source.id, audio);
+
+            audio.onended = () => {
+                activeAudio = null;
+                activeAudioSourceId = null;
+                resetActiveAudioButton();
+            };
+            audio.onerror = () => {
+                activeAudio = null;
+                activeAudioSourceId = null;
+                resetActiveAudioButton();
+                alert('音檔播放失敗，請確認音檔仍存在。');
+            };
+
+            try {
+                await audio.play();
+            } catch (error) {
+                activeAudio = null;
+                activeAudioSourceId = null;
+                resetActiveAudioButton();
+                alert('瀏覽器無法播放這個音檔。');
+            }
         }
 
         // 切換選項下拉選單
@@ -555,7 +799,7 @@
                     // 渲染對話紀錄
                     if (data.messages && data.messages.length > 0) {
                         data.messages.forEach(msg => {
-                            appendMessage(msg.sender, msg.text);
+                            appendMessage(msg.sender, msg.text, null, false, msg.references || []);
                         });
                     } else {
                         // 如果沒有對話紀錄，顯示歡迎訊息
@@ -598,16 +842,25 @@
         }
 
         // 修改名稱 Modal 邏輯
-        function openRenameModal(id, currentName) {
+        function openRenameModal(id, currentName, mode = 'notebook') {
             renameTargetId = id;
+            renameMode = mode;
             const input = document.getElementById('renameInput');
             input.value = currentName;
+            document.getElementById('renameModalTitle').textContent = mode === 'source'
+                ? '修改來源檔名'
+                : '重新命名筆記本';
             document.getElementById('renameModal').classList.remove('hidden');
             input.focus();
         }
 
+        function openSourceRenameModal(source) {
+            openRenameModal(source.id, source.filename, 'source');
+        }
+
         function closeRenameModal() {
             renameTargetId = null;
+            renameMode = 'notebook';
             document.getElementById('renameModal').classList.add('hidden');
         }
 
@@ -616,17 +869,36 @@
             if (!newName || !renameTargetId) return;
 
             try {
-                const res = await fetch(`/api/notebooks/${renameTargetId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: newName })
-                });
-                if (res.ok) {
-                    closeRenameModal();
+                if (renameMode === 'source') {
+                    const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${renameTargetId}/filename`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: newName })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.status !== 'success') {
+                        throw new Error(data.detail || data.message || '修改檔名失敗');
+                    }
+                    const sourceName = document.querySelector(`[data-source-name="${renameTargetId}"]`);
+                    if (sourceName && data.source) {
+                        sourceName.textContent = data.source.filename;
+                        sourceName.title = data.source.filename;
+                    }
+                } else {
+                    const res = await fetch(`/api/notebooks/${renameTargetId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: newName })
+                    });
+                    if (!res.ok) {
+                        throw new Error('修改名稱失敗');
+                    }
                     fetchNotebooks();
                 }
+                closeRenameModal();
             } catch (err) {
                 console.error("修改名稱失敗", err);
+                alert(err.message || '修改名稱失敗');
             }
         }
 
@@ -806,12 +1078,13 @@
         }
 
         const uploadProgressStages = [
-            { title: '上傳中', detail: '正在送出音檔到後端。', percent: 10 },
-            { title: '語音辨識中', detail: 'Whisper 正在把音訊轉成逐字稿。', percent: 28 },
-            { title: '文字切分中', detail: '正在整理逐字稿並切成知識片段。', percent: 44 },
-            { title: '向量化中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 64 },
-            { title: 'AI 摘要中', detail: 'Ollama 正在產生重點摘要。', percent: 82 },
-            { title: '推薦問題中', detail: '正在產生「也許你想問」。', percent: 92 },
+            { title: '上傳中', detail: '正在送出音檔到後端。', percent: 8 },
+            { title: '語音辨識中', detail: 'Whisper 正在把音訊轉成逐字稿。', percent: 24 },
+            { title: '重新命名中', detail: 'AI 正在根據逐字稿產生音檔名稱。', percent: 36 },
+            { title: '文字切分中', detail: '正在整理逐字稿並切成知識片段。', percent: 50 },
+            { title: '向量化中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 68 },
+            { title: 'AI 摘要中', detail: 'Ollama 正在產生重點摘要。', percent: 84 },
+            { title: '正在產生問題', detail: 'AI 正在根據內容產生可追問的問題。', percent: 94 },
             { title: '完成', detail: '音檔已處理完成。', percent: 100 }
         ];
 
@@ -990,12 +1263,98 @@
             updateUploadProgress(progress, uploadProgressStages.length - 2, 'error', message);
         }
 
-        async function uploadAudio() {
-            if (!currentNotebookId) return;
-            const fileInput = document.getElementById('audioFile');
-            if (fileInput.files.length === 0) return;
+        function formatRecordingTime(ms) {
+            const totalSeconds = Math.floor(ms / 1000);
+            const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+            const seconds = String(totalSeconds % 60).padStart(2, '0');
+            return `${minutes}:${seconds}`;
+        }
 
-            const file = fileInput.files[0];
+        function setRecordingStatus(text, tone = 'muted') {
+            const status = document.getElementById('recordingStatus');
+            status.textContent = text;
+            status.className = `text-xs min-h-[1rem] ${tone === 'error' ? 'text-red-300' : tone === 'active' ? 'text-blue-300' : tone === 'success' ? 'text-green-300' : 'text-gray-500'}`;
+        }
+
+        function setRecordingControls(isRecording) {
+            document.getElementById('startRecordBtn').disabled = isRecording;
+            document.getElementById('stopRecordBtn').disabled = !isRecording;
+            document.getElementById('startRecordBtn').classList.toggle('opacity-40', isRecording);
+        }
+
+        async function startRecording() {
+            if (!currentNotebookId) {
+                setRecordingStatus('請先進入一個筆記本再錄音。', 'error');
+                return;
+            }
+            if (!navigator.mediaDevices || !window.MediaRecorder) {
+                setRecordingStatus('這個瀏覽器不支援直接錄音。', 'error');
+                return;
+            }
+
+            try {
+                recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const preferredType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                    ? 'audio/webm;codecs=opus'
+                    : 'audio/webm';
+                mediaRecorder = new MediaRecorder(recordingStream, { mimeType: preferredType });
+                recordedChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = async () => {
+                    window.clearInterval(recordingTimer);
+                    document.getElementById('recordingTimer').textContent = '00:00';
+                    setRecordingControls(false);
+                    if (recordingStream) {
+                        recordingStream.getTracks().forEach(track => track.stop());
+                        recordingStream = null;
+                    }
+
+                    if (recordedChunks.length === 0) {
+                        setRecordingStatus('沒有收到錄音內容，請重新錄一次。', 'error');
+                        return;
+                    }
+
+                    const blob = new Blob(recordedChunks, { type: preferredType });
+                    const file = new File([blob], `recording-${Date.now()}.webm`, { type: preferredType });
+                    setRecordingStatus('錄音完成，正在轉成來源...', 'active');
+                    const result = await uploadAudioFile(file, { autoFilename: true, displayName: '錄音處理中' });
+                    if (result && result.status === 'success') {
+                        setRecordingStatus('錄音已加入來源列表。', 'success');
+                    } else {
+                        setRecordingStatus('錄音處理失敗，請稍後再試。', 'error');
+                    }
+                };
+
+                mediaRecorder.start();
+                recordingStartedAt = Date.now();
+                setRecordingControls(true);
+                setRecordingStatus('錄音中...', 'active');
+                recordingTimer = window.setInterval(() => {
+                    document.getElementById('recordingTimer').textContent = formatRecordingTime(Date.now() - recordingStartedAt);
+                }, 250);
+            } catch (error) {
+                setRecordingControls(false);
+                setRecordingStatus('無法啟用麥克風，請確認瀏覽器權限。', 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                setRecordingStatus('正在結束錄音...', 'active');
+                mediaRecorder.stop();
+            }
+        }
+
+        async function uploadAudioFile(file, options = {}) {
+            if (!currentNotebookId) return;
+            const autoFilename = Boolean(options.autoFilename);
+            const displayName = options.displayName || file.name;
             const sourcesList = document.getElementById('sourcesList');
 
             // 產生暫時的 ID
@@ -1003,16 +1362,20 @@
             const loadingMsgId = 'msg-' + Date.now();
 
             // 在左側欄顯示載入狀態
-            sourcesList.appendChild(createUploadTempSourceElement(tempSourceId, file.name));
+            sourcesList.appendChild(createUploadTempSourceElement(tempSourceId, displayName));
 
             // 在對話框顯示載入訊息
-            createUploadProgressMessage(loadingMsgId, file.name);
+            createUploadProgressMessage(loadingMsgId, displayName);
             const uploadProgress = { sourceId: tempSourceId, messageId: loadingMsgId, timer: null };
             startUploadProgress(uploadProgress);
 
             const formData = new FormData();
             formData.append('file', file);
             formData.append('notebook_id', currentNotebookId); // 傳送當前筆記本 ID
+            formData.append('auto_filename', autoFilename ? 'true' : 'false');
+            if (options.fallbackFilename) {
+                formData.append('fallback_filename', options.fallbackFilename);
+            }
 
             try {
                 const response = await fetch('/upload-audio/', { method: 'POST', body: formData });
@@ -1033,19 +1396,34 @@
                     }
 
                     // 顯示 AI 重點摘要
-                    const formattedResult = `**《${file.name}》重點摘要**\n\n${data.structured_knowledge}`;
+                    const formattedResult = `**《${source.filename}》重點摘要**\n\n${data.structured_knowledge}`;
                     appendMessage('AI', formattedResult);
                     renderSuggestedQuestions(data.suggested_questions || []);
+                    return data;
                 } else {
                     const errorMessage = '處理音檔時發生錯誤：' + (data.message || '未知錯誤');
                     failUploadProgress(uploadProgress, errorMessage);
                     const tempSource = document.getElementById(tempSourceId);
                     if (tempSource) tempSource.remove();
+                    return data;
                 }
             } catch (error) {
                 failUploadProgress(uploadProgress, '網路連線異常，請檢查伺服器狀態。');
                 const tempSource = document.getElementById(tempSourceId);
                 if (tempSource) tempSource.remove();
+                return null;
+            }
+        }
+
+        async function uploadAudio() {
+            const fileInput = document.getElementById('audioFile');
+            if (!currentNotebookId || fileInput.files.length === 0) return;
+
+            try {
+                await uploadAudioFile(fileInput.files[0], {
+                    autoFilename: true,
+                    fallbackFilename: fileInput.files[0].name
+                });
             } finally {
                 // 重置檔案輸入框
                 fileInput.value = '';
@@ -1090,7 +1468,7 @@
                 document.getElementById(loadingId).remove();
 
                 if (data.status === 'success') {
-                    appendMessage('AI', data.answer);
+                    appendMessage('AI', data.answer, null, false, data.references || []);
                 } else {
                     appendMessage('AI', '❌ 系統發生錯誤：' + (data.message || '未知錯誤'));
                 }
@@ -1106,7 +1484,7 @@
         }
 
         // 動態生成對話泡泡的函數
-        function appendMessage(sender, text, id = null, animate = false) {
+        function appendMessage(sender, text, id = null, animate = false, references = []) {
             const welcomeMsg = document.getElementById('initialWelcomeMessage');
             if (welcomeMsg) {
                 welcomeMsg.remove();
@@ -1132,6 +1510,10 @@
                     content.textContent = text;
                 } else {
                     content.innerHTML = renderSafeMarkdown(text);
+                    const referenceSection = renderReferences(references);
+                    if (referenceSection) {
+                        content.appendChild(referenceSection);
+                    }
                 }
                 div.appendChild(content);
             }

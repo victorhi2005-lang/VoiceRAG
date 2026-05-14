@@ -9,6 +9,10 @@ class TranscriptUpdateRequest(BaseModel):
     transcript_text: str
 
 
+class SourceFilenameUpdate(BaseModel):
+    filename: str
+
+
 class QuestionRequest(BaseModel):
     notebook_id: str
     question: str

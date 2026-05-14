@@ -19,6 +19,25 @@ chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 
 Metadata = dict[str, Any]
+REFERENCE_MAX_COUNT = 2
+REFERENCE_SCORE_MARGIN = 1.25
+REFERENCE_MIN_QUESTION_OVERLAP_SCORE = 1.3
+REFERENCE_MIN_ANSWER_OVERLAP_SCORE = 2.5
+
+REFERENCE_STOPWORDS = {
+    "這個", "這些", "那個", "哪些", "如何", "為何", "為什麼", "什麼", "是否",
+    "可以", "目前", "根據", "資料", "資料庫", "錄音", "紀錄", "內容", "回答",
+    "來源", "參考", "問題", "使用者", "相關", "說明", "指出", "提到", "表示",
+    "以及", "並且", "如果", "因為", "所以", "其中", "此外", "仍然", "需要",
+}
+
+NO_ANSWER_PHRASES = (
+    "根據目前資料庫的錄音紀錄，並未提及此資訊",
+    "根據目前資料庫的錄音紀錄，並未提及",
+    "目前資料庫的錄音紀錄並未提及",
+    "資料庫的錄音紀錄並未提及",
+    "並未提及此資訊",
+)
 
 
 def get_notebook_collection(notebook_id: str) -> Any:
@@ -34,6 +53,37 @@ bm25_metas: dict[str, list[Metadata]] = {}     # {notebook_id: [metadata 列表]
 def tokenize_chinese(text: str) -> list[str]:
     """jieba 中文分詞，過濾空白"""
     return [w for w in jieba.cut(text) if w.strip()]
+
+
+def get_meaningful_tokens(text: str) -> set[str]:
+    """取出適合用來判斷引用相關性的關鍵詞，降低常見虛詞干擾。"""
+    normalized_text = re.sub(r"https?://\S+", " ", text or "")
+    tokens: set[str] = set()
+    for token in tokenize_chinese(normalized_text):
+        cleaned = re.sub(r"[^\w\u4e00-\u9fff]", "", token).lower().strip()
+        if len(cleaned) < 2:
+            continue
+        if cleaned in REFERENCE_STOPWORDS:
+            continue
+        tokens.add(cleaned)
+    return tokens
+
+
+def score_token_overlap(tokens: set[str]) -> float:
+    """讓較具體的長詞略高分，作為 reranker 之外的輔助訊號。"""
+    return sum(1.0 + min(len(token), 6) * 0.15 for token in tokens)
+
+
+def normalize_reranker_scores(raw_scores: Any) -> list[float]:
+    if isinstance(raw_scores, (int, float)):
+        return [float(raw_scores)]
+    return [float(score) for score in cast(Iterable[Any], raw_scores)]
+
+
+def is_no_answer_response(answer: str) -> bool:
+    """判斷整段回答是否屬於「資料庫沒有答案」，避免顯示硬湊的來源。"""
+    compact_answer = re.sub(r"\s+", "", answer or "")
+    return any(phrase in compact_answer for phrase in NO_ANSWER_PHRASES)
 
 
 def rebuild_bm25_index(notebook_id: str) -> None:
@@ -88,6 +138,204 @@ def split_sentences(text):
     return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 5]
 
 
+def split_sentences_with_offsets(text: str) -> list[dict[str, Any]]:
+    """將文字切成句子並保留在原文中的位置，用於引用證據片段。"""
+    sentences: list[dict[str, Any]] = []
+    for match in re.finditer(r'[^。！？；\n]+[。！？；\n]?', text):
+        sentence = match.group(0).strip()
+        if len(sentence) <= 5:
+            continue
+        sentence_start = match.start() + len(match.group(0)) - len(match.group(0).lstrip())
+        sentence_end = match.end()
+        sentences.append({
+            "text": sentence,
+            "start": sentence_start,
+            "end": sentence_end
+        })
+
+    if not sentences and text.strip():
+        stripped = text.strip()
+        stripped_start = text.find(stripped)
+        sentences.append({
+            "text": stripped,
+            "start": stripped_start,
+            "end": stripped_start + len(stripped)
+        })
+
+    return sentences
+
+
+def score_reference_sentence(question_tokens: set[str], sentence: str) -> float:
+    sentence_tokens = set(tokenize_chinese(sentence))
+    if not sentence_tokens:
+        return 0.0
+    overlap = question_tokens & sentence_tokens
+    return len(overlap) + sum(len(token) for token in overlap) * 0.1
+
+
+def select_reference_evidence(question: str, doc: str, metadata: Metadata) -> dict[str, Any]:
+    """從檢索 chunk 中挑出較短的證據句，保留後續引用追溯需要的片段資訊。"""
+    try:
+        chunk_char_start = int(metadata.get("char_start", -1)) if metadata else -1
+    except Exception:
+        chunk_char_start = -1
+    try:
+        chunk_char_end = int(metadata.get("char_end", -1)) if metadata else -1
+    except Exception:
+        chunk_char_end = -1
+    if not doc:
+        return {
+            "char_start": chunk_char_start,
+            "char_end": chunk_char_end,
+            "excerpt": ""
+        }
+
+    sentences = split_sentences_with_offsets(doc)
+    if not sentences:
+        return {
+            "char_start": chunk_char_start,
+            "char_end": chunk_char_end,
+            "excerpt": doc[:220]
+        }
+
+    question_tokens = set(tokenize_chinese(question))
+    best_sentence = max(
+        sentences,
+        key=lambda item: score_reference_sentence(question_tokens, item["text"])
+    )
+
+    selected_start = best_sentence["start"]
+    selected_end = best_sentence["end"]
+    selected_text = best_sentence["text"]
+
+    # 句子太短時，補上下一句，讓證據片段更完整；但避免變成整個大 chunk。
+    if len(selected_text) < 80:
+        sentence_index = sentences.index(best_sentence)
+        if sentence_index + 1 < len(sentences):
+            next_sentence = sentences[sentence_index + 1]
+            candidate_text = doc[selected_start:next_sentence["end"]].strip()
+            if len(candidate_text) <= 220:
+                selected_end = next_sentence["end"]
+                selected_text = candidate_text
+
+    if len(selected_text) > 260:
+        selected_end = selected_start + 260
+        selected_text = doc[selected_start:selected_end].strip()
+
+    if chunk_char_start >= 0:
+        return {
+            "char_start": chunk_char_start + selected_start,
+            "char_end": chunk_char_start + selected_end,
+            "excerpt": selected_text
+        }
+
+    return {
+        "char_start": -1,
+        "char_end": -1,
+        "excerpt": selected_text
+    }
+
+
+def build_reference_candidate(question: str, doc: str, metadata: Metadata, reranker_score: float) -> dict[str, Any]:
+    label = get_reference_label(metadata)
+    evidence = select_reference_evidence(question, doc, metadata)
+    return {
+        "doc": doc,
+        "reranker_score": reranker_score,
+        "reference": {
+            "label": label,
+            "source_id": str(metadata.get("source_id", "")) if metadata else "",
+            "source": metadata.get("source", "未知來源") if metadata else "未知來源",
+            "chunk_index": metadata.get("chunk_index", -1) if metadata else -1,
+            "char_start": evidence["char_start"],
+            "char_end": evidence["char_end"],
+            "excerpt": evidence["excerpt"]
+        }
+    }
+
+
+def filter_relevant_references(
+    question: str,
+    answer: str,
+    candidates: list[dict[str, Any]],
+    limit: int = REFERENCE_MAX_COUNT
+) -> list[dict[str, Any]]:
+    """只保留真正支撐問題與答案的來源，避免把次相關檢索結果列給使用者。"""
+    if is_no_answer_response(answer):
+        return []
+
+    question_tokens = get_meaningful_tokens(question)
+    answer_tokens = get_meaningful_tokens(answer)
+    if not question_tokens or not answer_tokens:
+        return []
+
+    prepared_candidates: list[dict[str, Any]] = []
+    for candidate in candidates:
+        doc = str(candidate.get("doc", ""))
+        reference = cast(dict[str, Any], candidate.get("reference", {}))
+        if not reference.get("source_id"):
+            continue
+
+        doc_tokens = get_meaningful_tokens(doc)
+        if not doc_tokens:
+            continue
+
+        question_overlap = doc_tokens & question_tokens
+        answer_overlap = doc_tokens & answer_tokens
+        question_overlap_score = score_token_overlap(question_overlap)
+        answer_overlap_score = score_token_overlap(answer_overlap)
+        if (
+            question_overlap_score < REFERENCE_MIN_QUESTION_OVERLAP_SCORE
+            or answer_overlap_score < REFERENCE_MIN_ANSWER_OVERLAP_SCORE
+        ):
+            continue
+
+        prepared_candidates.append({
+            "doc": doc,
+            "reference": reference,
+            "question_overlap_score": question_overlap_score,
+            "answer_overlap_score": answer_overlap_score
+        })
+
+    if not prepared_candidates:
+        return []
+
+    reference_query = f"問題：{question}\n回答：{answer}"
+    pairs: list[tuple[str, str]] = [(reference_query, item["doc"]) for item in prepared_candidates]
+    try:
+        semantic_scores = normalize_reranker_scores(reranker.predict(cast(Any, pairs)))
+    except Exception:
+        semantic_scores = [
+            item["question_overlap_score"] + item["answer_overlap_score"]
+            for item in prepared_candidates
+        ]
+
+    scored_candidates: list[tuple[float, dict[str, Any]]] = []
+    for candidate, semantic_score in zip(prepared_candidates, semantic_scores):
+        score = (
+            float(semantic_score)
+            + float(candidate["question_overlap_score"]) * 0.15
+            + float(candidate["answer_overlap_score"]) * 0.2
+        )
+        scored_candidates.append((score, cast(dict[str, Any], candidate["reference"])))
+
+    if not scored_candidates:
+        return []
+
+    best_score = max(score for score, _ in scored_candidates)
+    best_by_source: dict[str, tuple[float, dict[str, Any]]] = {}
+    for relevance_score, reference in scored_candidates:
+        if relevance_score < best_score - REFERENCE_SCORE_MARGIN:
+            continue
+        source_key = str(reference["source_id"])
+        previous = best_by_source.get(source_key)
+        if previous is None or relevance_score > previous[0]:
+            best_by_source[source_key] = (relevance_score, reference)
+
+    ranked_references = sorted(best_by_source.values(), key=lambda item: item[0], reverse=True)
+    return [reference for _, reference in ranked_references[:limit]]
+
+
 def semantic_chunk(text, similarity_threshold=0.65, max_chunk_size=600, min_chunk_size=80):
     """基於語意相似度的智慧切分。"""
     sentences = split_sentences(text)
@@ -137,7 +385,7 @@ def format_timestamp(seconds):
     if seconds is None:
         return None
 
-    total_seconds = max(0, int(round(float(seconds))))
+    total_seconds = max(0, round(float(seconds)))
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
     secs = total_seconds % 60
@@ -200,6 +448,8 @@ def build_chunk_metadata(chunks, timed_segments, source_filename, source_id=None
             "source": source_filename,
             "source_id": source_id or "",
             "chunk_index": i,
+            "char_start": found_at,
+            "char_end": chunk_end,
             "start_time": float(start_time) if start_time is not None else -1.0,
             "end_time": float(end_time) if end_time is not None else -1.0,
             "time_range": get_time_range_text(start_time, end_time)
@@ -276,32 +526,66 @@ def index_source_transcript(notebook_id, source_id, filename, transcript_text, t
     return len(chunks)
 
 
+def update_source_filename_metadata(notebook_id, source_id, filename):
+    collection = get_notebook_collection(notebook_id)
+    existing = cast(dict[str, Any], collection.get(
+        where={"source_id": source_id},
+        include=["metadatas"]
+    ))
+    ids = cast(list[str], existing.get("ids") or [])
+    metadatas = cast(list[Metadata], existing.get("metadatas") or [])
+    if not ids:
+        return 0
+
+    updated_metadatas = []
+    for metadata in metadatas:
+        updated_metadata = dict(metadata or {})
+        updated_metadata["source"] = filename
+        updated_metadatas.append(updated_metadata)
+
+    collection.update(ids=ids, metadatas=updated_metadatas)
+    rebuild_bm25_index(notebook_id)
+    return len(ids)
+
+
 def get_reference_label(metadata):
     """將 metadata 轉成使用者看得懂的來源引用文字"""
     if not metadata:
-        return "未知來源（時間未記錄）"
+        return "未知來源"
 
-    source = metadata.get("source", "未知來源")
-    time_range = metadata.get("time_range")
-    if not time_range:
-        start_time = metadata.get("start_time")
-        end_time = metadata.get("end_time")
-        if start_time is not None and float(start_time) >= 0 and end_time is not None and float(end_time) >= 0:
-            time_range = get_time_range_text(start_time, end_time)
-        else:
-            time_range = "時間未記錄"
-    return f"{source}（{time_range}）"
+    return metadata.get("source", "未知來源")
 
 
-def append_reference_summary(answer, references):
-    """在 AI 回答後附上系統整理的參考來源，確保回答可追溯"""
-    if not references:
-        return answer
+def strip_model_source_mentions(answer: str) -> str:
+    """移除模型自行寫在正文中的來源文字，引用統一交給系統 references 顯示。"""
+    cleaned = answer or ""
+    cleaned = re.sub(r"\s*[（(]\s*(?:來源|參考來源|資料來源)\s*[:：][^）)]*[）)]", "", cleaned)
+    cleaned = re.sub(r"\s*[（(]\s*(?:資料片段|片段)\s*\d+\s*[）)]", "", cleaned)
 
-    lines = ["", "", "參考來源："]
-    for i, reference in enumerate(references, start=1):
-        lines.append(f"{i}. {reference['label']}")
-    return answer.rstrip() + "\n".join(lines)
+    lines = cleaned.splitlines()
+    filtered_lines: list[str] = []
+    skipping_reference_block = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^(?:參考來源|來源|資料來源)(?:\s*[:：]\s*)?$", stripped):
+            skipping_reference_block = True
+            continue
+        if skipping_reference_block:
+            if not stripped:
+                skipping_reference_block = False
+                filtered_lines.append(line)
+                continue
+            if re.match(r"^\d+[.、]\s+", stripped) or re.search(r"\.(?:mp3|m4a|wav|webm)\b", stripped, re.IGNORECASE):
+                continue
+            skipping_reference_block = False
+
+        if re.match(r"^(?:參考來源|來源|資料來源)\s*[:：]", stripped):
+            continue
+        filtered_lines.append(line)
+
+    cleaned = "\n".join(filtered_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 def parse_suggested_questions(raw_text, limit):
@@ -469,41 +753,34 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
 
         pairs: list[tuple[str, str]] = [(question, doc) for doc in fused_candidates]
         raw_scores = reranker.predict(cast(Any, pairs))
-
-        if isinstance(raw_scores, (int, float)):
-            scores = [float(raw_scores)]
-        else:
-            scores = [float(score) for score in cast(Iterable[Any], raw_scores)]
+        scores = normalize_reranker_scores(raw_scores)
 
         ranked = sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True)[:5]
         top_documents = [doc for _, doc in ranked]
-        references: list[dict[str, Any]] = []
+        reference_candidates: list[dict[str, Any]] = []
         context_blocks: list[str] = []
-        seen_reference_labels: set[str] = set()
-        for index, doc in enumerate(top_documents, start=1):
+        seen_reference_keys: set[str] = set()
+        for index, (reranker_score, doc) in enumerate(ranked, start=1):
             metadata = doc_metadata_map.get(doc, {})
             label = get_reference_label(metadata)
-            context_blocks.append(f"[來源 {index}: {label}]\n{doc}")
-            if label not in seen_reference_labels:
-                seen_reference_labels.add(label)
-                references.append({
-                    "label": label,
-                    "source": metadata.get("source", "未知來源") if metadata else "未知來源",
-                    "time_range": metadata.get("time_range", "時間未記錄") if metadata else "時間未記錄",
-                    "start_time": metadata.get("start_time", -1) if metadata else -1,
-                    "end_time": metadata.get("end_time", -1) if metadata else -1,
-                    "chunk_index": metadata.get("chunk_index", -1) if metadata else -1
-                })
+            context_blocks.append(f"[資料片段 {index}]\n{doc}")
+            source_id = str(metadata.get("source_id", "")) if metadata else ""
+            chunk_index = metadata.get("chunk_index", -1) if metadata else -1
+            reference_key = f"{source_id or label}:{chunk_index}"
+            if reference_key not in seen_reference_keys:
+                seen_reference_keys.add(reference_key)
+                reference_candidates.append(build_reference_candidate(question, doc, metadata, reranker_score))
         retrieved_context = "\n\n".join(context_blocks)
 
-        source_files = list(dict.fromkeys(reference["source"] for reference in references))
         history = get_recent_messages(notebook_id, limit=6)
         history_text = ""
         if history:
             history_lines = []
             for msg in history:
                 role = "使用者" if msg["sender"] == "User" else "AI 助理"
-                text = msg["text"][:300] + "..." if len(msg["text"]) > 300 else msg["text"]
+                raw_history_text = str(msg["text"])
+                history_body = strip_model_source_mentions(raw_history_text) if msg["sender"] == "AI" else raw_history_text
+                text = history_body[:300] + "..." if len(history_body) > 300 else history_body
                 history_lines.append(f"{role}：{text}")
             history_text = "\n".join(history_lines)
 
@@ -514,9 +791,10 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
 1.【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字！
 2. 如果【參考資料】中有答案，請用條理清晰、分點說明的方式回答。
 3. 如果【參考資料】無法回答問題，請誠實回答：「根據目前資料庫的錄音紀錄，並未提及此資訊」，【絕對不可以】編造答案。
-4. 回答正文不要自行輸出「參考來源」段落；系統會在最後自動附上來源。
+4. 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
 5. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
-6. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。"""
+6. 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
+7. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。"""
 
         if history_text:
             rag_prompt += f"\n\n【歷史對話】：\n{history_text}"
@@ -525,10 +803,12 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         rag_prompt += f"\n\n【使用者的問題】：\n{question}"
 
         response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": rag_prompt + "\n/no_think"}])
-        ai_answer = append_reference_summary(response["message"]["content"], references)
+        ai_answer = strip_model_source_mentions(response["message"]["content"])
+        references = filter_relevant_references(question, ai_answer, reference_candidates)
+        source_files = list(dict.fromkeys(reference["source"] for reference in references))
 
         try:
-            append_qa_messages(notebook_id, question, ai_answer)
+            append_qa_messages(notebook_id, question, ai_answer, references)
         except Exception:
             pass
 

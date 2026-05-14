@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import uuid
 from datetime import datetime
@@ -52,9 +53,14 @@ def init_db():
             sender TEXT,
             text TEXT,
             created_at TEXT,
+            references_json TEXT,
             FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
         )
     ''')
+    cursor.execute("PRAGMA table_info(messages)")
+    message_columns = [row[1] for row in cursor.fetchall()]
+    if "references_json" not in message_columns:
+        cursor.execute("ALTER TABLE messages ADD COLUMN references_json TEXT")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS suggested_questions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,10 +162,25 @@ def get_notebook_details_data(notebook_id):
     ]
 
     cursor.execute(
-        "SELECT sender, text, created_at FROM messages WHERE notebook_id = ? ORDER BY id ASC",
+        "SELECT sender, text, created_at, references_json FROM messages WHERE notebook_id = ? ORDER BY id ASC",
         (notebook_id,)
     )
-    messages = [{"sender": r[0], "text": r[1], "created_at": r[2]} for r in cursor.fetchall()]
+    messages = []
+    for row in cursor.fetchall():
+        references = []
+        if row[3]:
+            try:
+                parsed_references = json.loads(row[3])
+                if isinstance(parsed_references, list):
+                    references = parsed_references
+            except Exception:
+                references = []
+        messages.append({
+            "sender": row[0],
+            "text": row[1],
+            "created_at": row[2],
+            "references": references
+        })
 
     cursor.execute(
         """
@@ -240,6 +261,73 @@ def get_source_update_info(notebook_id, source_id):
     return row
 
 
+def get_source_audio_info(notebook_id, source_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, filename
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "filename": row[1]}
+
+
+def get_source_filenames(notebook_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT filename FROM sources WHERE notebook_id = ?", (notebook_id,))
+    filenames = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return filenames
+
+
+def update_source_filename_record(notebook_id, source_id, filename):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT filename
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    old_filename = row[0]
+    cursor.execute(
+        """
+        UPDATE sources
+        SET filename = ?
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (filename, source_id, notebook_id)
+    )
+    cursor.execute(
+        """
+        UPDATE suggested_questions
+        SET source_filename = ?
+        WHERE notebook_id = ? AND source_filename = ?
+        """,
+        (filename, notebook_id, old_filename)
+    )
+    cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
+    conn.commit()
+    conn.close()
+    return {"old_filename": old_filename, "filename": filename, "updated_at": now}
+
+
 def update_source_transcript_record(notebook_id, source_id, transcript_text):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
@@ -291,8 +379,8 @@ def insert_ai_summary_message(notebook_id, filename, structured_knowledge):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)",
-        (notebook_id, "AI", formatted_result, now)
+        "INSERT INTO messages (notebook_id, sender, text, created_at, references_json) VALUES (?, ?, ?, ?, ?)",
+        (notebook_id, "AI", formatted_result, now, None)
     )
     conn.commit()
     conn.close()
@@ -342,17 +430,18 @@ def get_recent_messages(notebook_id, limit=6):
         return []
 
 
-def append_qa_messages(notebook_id, question, answer):
+def append_qa_messages(notebook_id, question, answer, references=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    references_json = json.dumps(references or [], ensure_ascii=False)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)",
-        (notebook_id, "User", question, now)
+        "INSERT INTO messages (notebook_id, sender, text, created_at, references_json) VALUES (?, ?, ?, ?, ?)",
+        (notebook_id, "User", question, now, None)
     )
     cursor.execute(
-        "INSERT INTO messages (notebook_id, sender, text, created_at) VALUES (?, ?, ?, ?)",
-        (notebook_id, "AI", answer, now)
+        "INSERT INTO messages (notebook_id, sender, text, created_at, references_json) VALUES (?, ?, ?, ?, ?)",
+        (notebook_id, "AI", answer, now, references_json)
     )
     cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
     conn.commit()

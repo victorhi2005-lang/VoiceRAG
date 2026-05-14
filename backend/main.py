@@ -12,7 +12,7 @@ from db import (
     mark_suggested_question_used_record,
     update_notebook_name,
 )
-from schemas import NotebookUpdate, QuestionRequest, TranscriptUpdateRequest
+from schemas import NotebookUpdate, QuestionRequest, SourceFilenameUpdate, TranscriptUpdateRequest
 
 
 app = FastAPI()
@@ -26,7 +26,7 @@ async def serve_frontend():
 
 init_db()
 
-from audio_service import process_audio_upload
+from audio_service import get_audio_file_path, process_audio_upload, rename_source_filename
 from rag_service import (
     SourceNotFoundError,
     answer_question,
@@ -87,6 +87,22 @@ async def update_source_transcript_endpoint(notebook_id: str, source_id: str, re
         raise HTTPException(status_code=404, detail="找不到指定來源")
 
 
+@app.get("/api/notebooks/{notebook_id}/sources/{source_id}/audio")
+async def get_source_audio(notebook_id: str, source_id: str):
+    audio = get_audio_file_path(notebook_id, source_id)
+    if not audio:
+        raise HTTPException(status_code=404, detail="找不到來源音檔")
+    return FileResponse(audio["path"], filename=audio["filename"])
+
+
+@app.put("/api/notebooks/{notebook_id}/sources/{source_id}/filename")
+async def update_source_filename(notebook_id: str, source_id: str, request: SourceFilenameUpdate):
+    result = rename_source_filename(notebook_id, source_id, request.filename)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=404, detail=result.get("message", "找不到指定來源"))
+    return result
+
+
 @app.delete("/api/notebooks/{notebook_id}")
 async def delete_notebook(notebook_id: str):
     delete_notebook_record(notebook_id)
@@ -95,8 +111,13 @@ async def delete_notebook(notebook_id: str):
 
 
 @app.post("/upload-audio/")
-async def upload_audio(notebook_id: str = Form(...), file: UploadFile = File(...)):
-    return process_audio_upload(notebook_id, file)
+async def upload_audio(
+    notebook_id: str = Form(...),
+    file: UploadFile = File(...),
+    auto_filename: bool = Form(False),
+    fallback_filename: str | None = Form(None)
+):
+    return process_audio_upload(notebook_id, file, auto_filename, fallback_filename)
 
 
 @app.post("/ask-question/")
