@@ -1,401 +1,366 @@
-# 📘 程式開發企劃書
-
----
-
 <div align="center">
 
-## **VoiceRAG — 智慧語音知識庫系統**
+# 🎙️ VoiceRAG — 智慧語音知識庫系統
 
 **以口述建構知識，以 AI 檢索智慧**
 
-| 項目 | 內容 |
-|------|------|
-| **系所** | 資訊管理學系 |
-| **專題類型** | 畢業專題 |
-| **專案版本** | v1.0 |
-| **文件日期** | 2026 年 4 月 28 日 |
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.136.1-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Ollama](https://img.shields.io/badge/Ollama-Qwen3%3A14B-8B5CF6?logo=ollama&logoColor=white)](https://ollama.com/)
+[![CUDA](https://img.shields.io/badge/CUDA-GPU%20Accelerated-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
 
 </div>
 
 ---
 
-## 1. 執行摘要 (Executive Summary)
+## 專案總覽
 
-### 核心問題
-
-在許多產業（長照機構、教育現場、中小企業）中，大量**珍貴的實務經驗與口述知識**僅存在於資深人員的腦中，面臨以下危機：
-
-- 🔴 **知識流失風險**：人員離職、退休即帶走多年經驗
-- 🔴 **傳承效率低下**：一對一口頭教學無法規模化
-- 🔴 **檢索困難**：即便錄音保存，也難以從數十小時的音檔中快速找到所需資訊
-
-### 解決方案
-
-**VoiceRAG** 系統提供一站式解決方案：
+VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的本地端 AI 知識庫。系統聚焦三件事：保存口述知識、提升檢索效率，並讓 AI 回答能回到原始來源。
 
 ```
-🎙️ 口述錄音 → 📝 語音轉文字 → 🧠 AI 知識整理 → 📚 向量知識庫 → 💬 智慧問答檢索
+口述錄音 → Whisper 語音轉文字 → AI 摘要整理 → 切分與向量化 → 向量知識庫 → RAG 智慧問答
 ```
 
-使用者只需透過手機錄音，系統即自動完成知識的**擷取、結構化、儲存與檢索**，實現「說出來就能查得到」的智慧知識管理。
-
-### 預期效益
-
-| 效益面向 | 說明 |
-|----------|------|
-| **知識保存率** | 口述知識 100% 數位化保存，不再因人員異動而流失 |
-| **檢索效率** | 從數小時錄音中秒級定位所需知識，提升 10 倍以上 |
-| **傳承成本** | 降低新人培訓時間約 40%，減少重複教學負擔 |
-| **隱私安全** | 全程本地端 AI 運算，資料不外傳雲端 |
+**核心特色：**
+- **本地端隱私**：資料保存在本機，AI 推理主要於本機 GPU 執行，不上傳雲端
+- **混合檢索 + 精排**：Dense 向量檢索、BM25、RRF 與 Reranker 逐步精煉結果
+- **多筆記本管理**：每個筆記本都是獨立知識空間，來源、對話、向量彼此隔離
+- **多輪對話**：自動帶入歷史上下文，支援追問與連續提問
+- **來源引用追溯**：AI 回答附帶具體引用來源，可追溯至原始音檔
 
 ---
 
-## 2. 專案背景與目的 (Background & Objectives)
+## 系統架構
 
-### 2.1 痛點分析
+### 技術棧總覽
 
-#### 市場需求
+| 層級 | 技術 | 說明 |
+|------|------|------|
+| **前端** | HTML5 + JavaScript + TailwindCSS | 單頁式深色介面 |
+| **後端** | FastAPI (Python) | API 路由與服務入口 |
+| **語音辨識** | faster-whisper (`large-v3-turbo`) | CUDA 加速，VAD 過濾靜音 |
+| **Embedding** | `BAAI/bge-m3` (FP16) | 多語言向量化，1024 維 |
+| **Reranker** | `BAAI/bge-reranker-v2-m3` (FP16) | CrossEncoder 精排 |
+| **LLM** | Ollama `qwen3:14b` | 本地端摘要與回答生成 |
+| **向量資料庫** | ChromaDB | 每筆記本獨立 Collection |
+| **關聯資料庫** | SQLite | 筆記本、來源、對話與推薦問題 |
+| **關鍵字檢索** | rank_bm25 + jieba | 中文分詞與 BM25 索引 |
 
-隨著台灣步入超高齡社會與產業數位轉型浪潮，以下場景產生迫切的知識管理需求：
-
-| 場景 | 痛點描述 |
-|------|----------|
-| **長照機構** | 照護人員流動率高，照護經驗難以系統化傳承 |
-| **中小企業** | 資深師傅的操作 know-how 僅靠口耳相傳 |
-| **教育現場** | 教師課堂講解內容無法有效保存與複習 |
-| **田野調查** | 口述歷史、訪談紀錄的整理耗費大量人力 |
-
-#### 現有系統缺點
-
-| 現有方案 | 缺點 |
-|----------|------|
-| 傳統錄音筆 | 僅錄音不轉文字，無法搜尋內容 |
-| 雲端語音轉文字 (Google/Azure) | 資料上傳雲端，有隱私疑慮；按量計費，長期成本高 |
-| 一般筆記軟體 | 需人工整理，無法自動結構化與智慧檢索 |
-| ChatGPT 等通用 AI | 無法基於自有知識庫回答，容易產生幻覺 (Hallucination) |
-
-### 2.2 開發目標
-
-1. **口述知識數位化**：透過語音辨識將口述內容精準轉為繁體中文文字
-2. **知識自動結構化**：利用生成式 AI 自動整理逐字稿為條理清晰的知識重點
-3. **向量知識庫建置**：將結構化知識切分並向量化，儲存於高效能向量資料庫
-4. **RAG 智慧問答**：使用者以自然語言提問，系統從知識庫精準檢索並生成回答
-5. **全端本地化部署**：所有 AI 模型與資料均在本地端運行，確保資料隱私
-
-### 2.3 產品核心價值
-
-> **「讓每一句口述，都成為組織永久的智慧資產。」**
-
-VoiceRAG 的核心價值在於將**非結構化的口述知識**轉化為**可檢索、可傳承的數位資產**，並透過 RAG 技術確保 AI 回答有據可查、不編造內容。
-
----
-
-## 3. 產品定位與市場分析 (Market & Competitive Analysis)
-
-### 3.1 目標客群 (Target Audience)
-
-| 客群 | 使用情境 | 核心需求 |
-|------|----------|----------|
-| **長照機構管理者** | 記錄照護經驗、交班注意事項 | 降低人員流動帶來的知識損失 |
-| **中小企業主/主管** | 保存資深員工操作 know-how | 加速新人訓練，維持品質一致 |
-| **教育工作者** | 課堂講解重點自動整理 | 提升教學效率與學生複習便利性 |
-| **研究人員** | 田野調查訪談紀錄 | 快速檢索大量訪談內容 |
-| **個人使用者** | 生活知識備忘、會議紀錄 | 隨時錄、隨時查 |
-
-### 3.2 競爭對手 SWOT 分析
-
-#### VoiceRAG（本專案）
-
-| | 分析 |
-|---|------|
-| **S 優勢** | ① 全程本地化，零隱私風險 ② 結合 RAG 技術，回答有據可查 ③ 免費開源模型，無 API 費用 ④ 中文語音辨識優化 |
-| **W 劣勢** | ① 需要 GPU 硬體支援 ② 初期需手動部署 ③ 使用者介面較陽春 |
-| **O 機會** | ① 台灣知識管理市場需求成長 ② 開源 AI 模型快速進步 ③ 可擴展為多語言版本 |
-| **T 威脅** | ① 大型雲端廠商可能推出類似服務 ② 語音辨識技術快速迭代 |
-
-#### 競品比較表
-
-| 功能 | VoiceRAG | Notion AI | 訊飛聽見 | Otter.ai |
-|------|----------|-----------|----------|----------|
-| 語音轉文字 | ✅ 本地端 | ❌ | ✅ 雲端 | ✅ 雲端 |
-| AI 知識整理 | ✅ | ✅ | ⚠️ 有限 | ❌ |
-| RAG 知識問答 | ✅ | ⚠️ 有限 | ❌ | ❌ |
-| 資料隱私 | ✅ 全本地 | ❌ 雲端 | ❌ 雲端 | ❌ 雲端 |
-| 繁體中文支援 | ✅ 優化 | ✅ | ⚠️ 簡體為主 | ❌ 英語為主 |
-| 費用 | 免費 | 月費制 | 按量計費 | 月費制 |
-
----
-
-## 4. 系統功能與架構規劃 (Functional Requirements & Architecture)
-
-### 4.1 用戶故事 (User Stories)
-
-| 編號 | 角色 | 用戶故事 | 驗收條件 |
-|------|------|----------|----------|
-| US-01 | 知識貢獻者 | 身為一名資深照護員，我希望能用手機錄下照護技巧，讓系統自動整理成文字知識 | 上傳音檔後，系統回傳結構化知識重點 |
-| US-02 | 知識查詢者 | 身為一名新進員工，我希望用自然語言提問，就能找到前輩留下的操作知識 | 輸入問題後 10 秒內獲得基於知識庫的回答 |
-| US-03 | 管理者 | 身為主管，我希望能看到 AI 整理後的知識摘要，確認內容品質 | 上傳完成後可預覽 AI 整理的結構化知識 |
-| US-04 | 查詢者 | 身為使用者，我希望 AI 回答時能附上參考來源，方便我驗證 | 回答中包含引用的知識片段來源 |
-
-### 4.2 功能需求清單
-
-#### 必要功能 (Must-have) 🔴
-
-| 功能 | 說明 |
-|------|------|
-| 音檔上傳 | 支援 m4a / mp3 / wav 等常見音訊格式上傳 |
-| 語音轉文字 | 使用 Whisper large-v3 模型進行繁體中文語音辨識 |
-| AI 知識結構化 | 透過 Qwen2.5 LLM 將逐字稿整理為條列式知識重點 |
-| 知識向量化存儲 | 使用 text2vec 模型將知識分塊嵌入向量，存入 ChromaDB |
-| RAG 智慧問答 | 使用者提問 → 向量檢索 → LLM 生成有據回答 |
-| Web 操作介面 | 提供上傳與問答的網頁使用者介面 |
-
-#### 次要功能 (Nice-to-have) 🟡
-
-| 功能 | 說明 |
-|------|------|
-| 手機即時錄音 | 直接在網頁/App 中錄音，免去手動上傳步驟 |
-| 多人知識庫 | 支援多個獨立知識庫空間，分類管理不同主題 |
-| 知識庫瀏覽 | 列表檢視已存入的所有知識片段與來源檔案 |
-| 對話記錄保存 | 保存歷史問答紀錄，方便回顧與匯出 |
-| 使用者認證 | 帳號登入機制，區分不同使用者權限 |
-
-### 4.3 系統架構圖
-
-#### 知識建立流程
+### 知識建立流程
 
 ```mermaid
 flowchart LR
-    A["手機錄音"] --> B["上傳音檔"]
-    B --> C["FastAPI"]
-    C --> D["Whisper v3\n語音辨識"]
-    D --> E["Qwen2.5\n知識整理"]
-    E --> F["text2vec\n向量化"]
-    F --> G["ChromaDB\n儲存"]
+    A["錄音 / 上傳音檔"] --> B["FastAPI"]
+    B --> C["Whisper 語音辨識"]
+    C --> D["語意切分"]
+    D --> E["BGE-M3 向量化"]
+    E --> F["ChromaDB 儲存"]
+    B --> G["Qwen3:14B 摘要"]
 
-    style A fill:#FFFFFF,stroke:#333,color:#000
-    style B fill:#E3F2FD,stroke:#1565C0,color:#000
-    style C fill:#FFF3E0,stroke:#E65100,color:#000
-    style D fill:#F3E5F5,stroke:#7B1FA2,color:#000
-    style E fill:#F3E5F5,stroke:#7B1FA2,color:#000
-    style F fill:#F3E5F5,stroke:#7B1FA2,color:#000
-    style G fill:#E8F5E9,stroke:#2E7D32,color:#000
-```
-
-#### 知識檢索流程 (RAG)
-
-```mermaid
-flowchart LR
-    A["使用者提問"] --> B["FastAPI"]
-    B --> C["text2vec\n問題向量化"]
-    C --> D["ChromaDB\n語意檢索 Top5"]
-    D --> E["Qwen2.5\n依據資料回答"]
-    E --> F["回傳答案\n附引用來源"]
-
-    style A fill:#FFFFFF,stroke:#333,color:#000
+    style A fill:#E3F2FD,stroke:#1565C0,color:#000
     style B fill:#FFF3E0,stroke:#E65100,color:#000
     style C fill:#F3E5F5,stroke:#7B1FA2,color:#000
-    style D fill:#E8F5E9,stroke:#2E7D32,color:#000
+    style D fill:#FCE4EC,stroke:#C62828,color:#000
     style E fill:#F3E5F5,stroke:#7B1FA2,color:#000
+    style F fill:#E8F5E9,stroke:#2E7D32,color:#000
+    style G fill:#F3E5F5,stroke:#7B1FA2,color:#000
+```
+
+### RAG 問答流程
+
+```mermaid
+flowchart LR
+    A["使用者提問"] --> B["BGE-M3 向量化"]
+    B --> C["Dense 向量檢索 Top-20"]
+    A --> D["jieba 中文分詞"]
+    D --> E["BM25 關鍵字檢索 Top-20"]
+    C --> F["RRF 排名融合"]
+    E --> F
+    F --> G["BGE-Reranker 精排至 Top-5"]
+    G --> H["Qwen3:14B 生成回答"]
+    H --> I["引用過濾 + 來源追溯"]
+
     style F fill:#E3F2FD,stroke:#1565C0,color:#000
-```
-
-#### 技術分層總覽
-
-| 層級 | 元件 | 說明 |
-|------|------|------|
-| **前端介面層** | HTML5 + JS + TailwindCSS | 音檔上傳介面、AI 問答 Chat UI |
-| **後端服務層** | FastAPI (Python) | /upload-audio/ API、/ask-question/ API |
-| **AI 模型層** | Whisper v3 / Qwen2.5 / text2vec | 語音辨識(CUDA)、知識整理與問答、文字向量化 |
-| **資料儲存層** | ChromaDB / audio_uploads/ | 向量知識庫、原始音檔儲存 |
-
-### 4.4 系統流程圖
-
-#### 知識建立流程
-
-```mermaid
-sequenceDiagram
-    participant U as 👤 使用者
-    participant FE as 🖥️ 前端介面
-    participant API as ⚙️ FastAPI
-    participant W as 🎙️ Whisper
-    participant LLM as 🧠 Qwen2.5
-    participant EMB as 📐 text2vec
-    participant DB as 💾 ChromaDB
-
-    U->>FE: 上傳音檔 (.m4a/.mp3)
-    FE->>API: POST /upload-audio/
-    API->>API: 儲存音檔至 audio_uploads/
-    API->>W: 傳入音檔路徑
-    W-->>API: 回傳繁體中文逐字稿
-    API->>LLM: 傳入逐字稿 + 整理提示詞
-    LLM-->>API: 回傳結構化知識
-    API->>API: 以 RecursiveTextSplitter 切分知識
-    loop 每個知識片段
-        API->>EMB: 文字 → 向量
-        EMB-->>API: 回傳向量
-        API->>DB: 儲存 (ID, 向量, 文字, 來源)
-    end
-    API-->>FE: 回傳成功訊息 + 結構化知識
-    FE-->>U: 顯示知識摘要
-```
-
-#### RAG 問答流程
-
-```mermaid
-sequenceDiagram
-    participant U as 👤 使用者
-    participant FE as 🖥️ 前端介面
-    participant API as ⚙️ FastAPI
-    participant EMB as 📐 text2vec
-    participant DB as 💾 ChromaDB
-    participant LLM as 🧠 Qwen2.5
-
-    U->>FE: 輸入自然語言問題
-    FE->>API: POST /ask-question/
-    API->>EMB: 問題文字 → 向量
-    EMB-->>API: 回傳問題向量
-    API->>DB: 向量相似度搜尋 (Top-5)
-    DB-->>API: 回傳 5 段最相關知識
-    API->>LLM: 組合 RAG Prompt (問題 + 參考資料)
-    Note over LLM: 嚴格依據參考資料回答<br/>禁止編造內容
-    LLM-->>API: 回傳繁體中文回答
-    API-->>FE: 回傳答案 + 引用來源
-    FE-->>U: 顯示 AI 回答
-```
-
-### 4.5 資料庫架構
-
-```mermaid
-erDiagram
-    CHROMA_COLLECTION {
-        string id PK "如：test_m4a_chunk_0"
-        float[] embedding "768 維向量"
-        string document "知識片段文字內容"
-        json metadata "來源檔案等元資料"
-    }
-
-    AUDIO_FILES {
-        string filename PK "原始音檔名"
-        string format "m4a / mp3 / wav"
-        int size_bytes "檔案大小"
-        datetime upload_time "上傳時間"
-    }
-
-    AUDIO_FILES ||--o{ CHROMA_COLLECTION : "產生多個知識片段"
+    style G fill:#FCE4EC,stroke:#C62828,color:#000
+    style H fill:#F3E5F5,stroke:#7B1FA2,color:#000
+    style I fill:#E8F5E9,stroke:#2E7D32,color:#000
 ```
 
 ---
 
-## 5. 技術選型與開發流程 (Technology & Implementation Plan)
+## 功能特色
 
-### 5.1 技術棧 (Tech Stack)
+### 多筆記本管理
+- 建立、重新命名、刪除筆記本
+- 每個筆記本擁有獨立的知識庫、對話紀錄與來源管理
+- 卡片式首頁導覽，顯示來源數量與最後更新時間
 
-| 層級 | 技術 | 版本 | 選用理由 |
-|------|------|------|----------|
-| **前端框架** | HTML5 + JavaScript | - | 輕量、無需編譯，瀏覽器原生支援 |
-| **前端樣式** | TailwindCSS (CDN) | 3.x | 快速開發響應式介面 |
-| **後端框架** | FastAPI (Python) | 0.100+ | 高效能非同步 API、自動文件生成 |
-| **語音辨識** | faster-whisper | large-v3 | GPU 加速、繁體中文優化、本地端 |
-| **大語言模型** | Ollama + Qwen2.5 | 7B | 本地端部署、中文能力優秀、免費 |
-| **文字嵌入** | text2vec-base-chinese | - | 中文語意向量化，HuggingFace 開源 |
-| **文字切分** | LangChain TextSplitter | - | 智慧切分，支援中文標點分隔 |
-| **向量資料庫** | ChromaDB | 0.4+ | 輕量、嵌入式、適合原型開發 |
-| **GPU 加速** | NVIDIA CUDA | 11.8+ | Whisper 語音辨識加速必備 |
-| **執行環境** | Python venv | 3.10+ | 隔離環境，避免套件衝突 |
+### 音檔上傳與即時錄音
+- 支援 MP3 / M4A / WAV / WebM 等常見音訊格式
+- 網頁端直接錄音，錄音完成自動上傳處理
+- AI 自動依據逐字稿內容產生音檔名稱
 
-### 5.2 開發環境需求
+### 語音辨識與 AI 摘要
+- Whisper `large-v3-turbo` 高速繁體中文語音辨識（VAD + Batch 推理）
+- 保留每段語音的時間戳，供引用追溯使用
+- Qwen3:14B 自動產生結構化重點摘要
+- 上傳完成後自動產生推薦問題
 
-| 項目 | 最低需求 | 建議配置 |
-|------|----------|----------|
-| **作業系統** | Windows 10 64-bit | Windows 11 |
-| **CPU** | Intel i5 / AMD R5 | Intel i7 / AMD R7 |
-| **RAM** | 16 GB | 32 GB |
-| **GPU** | NVIDIA GTX 1660 (6GB) | NVIDIA RTX 3060 (12GB) |
-| **儲存空間** | 20 GB SSD | 50 GB SSD |
-| **Python** | 3.10 | 3.11 |
+### 四階段混合檢索
+1. **Dense 向量檢索**：BGE-M3 語意相似度搜尋
+2. **BM25 關鍵字檢索**：jieba 中文分詞，精確匹配人名、專有名詞
+3. **RRF 排名融合**：Reciprocal Rank Fusion 合併兩份排名
+4. **Reranker 精排**：BGE-Reranker-v2-m3 CrossEncoder 二次排序，取 Top-5
 
-### 5.3 專案目錄結構
+### 智慧問答與來源引用
+- 基於 RAG 的知識問答，嚴格依據資料庫內容回答
+- 多輪對話記憶（最近 6 則對話上下文）
+- 自動過濾不相關引用，只顯示真正支撐答案的來源
+- 回答正文自動清理模型自行產生的來源標註
+
+### 逐字稿修正與重新索引
+- 查看完整語音逐字稿
+- 手動修正 Whisper 辨識錯誤
+- 修正後自動重新切分、向量化並更新索引
+
+### 資料維護
+- 資料一致性檢查：自動比對 SQLite / ChromaDB / 音檔三方資料
+- 孤兒索引清除：一鍵清理已無對應資料的 ChromaDB segment 目錄
+
+---
+
+## 專案目錄結構
 
 ```
 rag_project/
+├── README.md                        # 專案說明文件
+├── AGENTS.md                        # AI 協作指南
+├── docs/
+│   ├── improvement_plan1.md         # RAG 強化計畫（第一階段）
+│   ├── improvement_plan2.md         # 強化計畫（第二階段）
+│   ├── notebook_dashboard_plan.md   # 多筆記本功能規劃
+│   └── troubleshooting_log.md       # 開發除錯紀錄
 └── backend/
-    ├── main.py                  # FastAPI 後端主程式
+    ├── main.py                      # FastAPI 入口，API 路由定義
+    ├── models.py                    # AI 模型載入（Embedding / Reranker / Whisper）
+    ├── rag_service.py               # RAG 核心邏輯（檢索 / 排序 / 問答 / 切分）
+    ├── audio_service.py             # 音檔管理（上傳 / 轉錄 / 摘要 / 刪除）
+    ├── db.py                        # SQLite 資料層（筆記本 / 來源 / 對話）
+    ├── schemas.py                   # Pydantic 請求模型
+    ├── requirements.txt             # Python 套件清單
     ├── static/
-    │   └── index.html           # 前端網頁介面
-    ├── audio_uploads/           # 上傳音檔儲存目錄
-    ├── chroma_db/               # ChromaDB 向量資料庫
-    │   ├── chroma.sqlite3       # 資料庫檔案
-    │   └── {collection_id}/     # 向量索引資料
-    ├── venv/                    # Python 虛擬環境
-    └── requirements.txt         # Python 套件清單
+    │   └── index.html               # 前端單頁式介面（1700+ 行）
+    ├── audio_uploads/               # 上傳音檔儲存目錄（.gitignore）
+    ├── chroma_db/                   # ChromaDB 向量資料（.gitignore）
+    ├── notebooks.db                 # SQLite 資料庫（.gitignore）
+    └── venv/                        # Python 虛擬環境（.gitignore）
 ```
 
 ---
 
-## 6. 執行進度表 (Project Schedule / Timeline)
+## 環境需求
 
-### 6.1 甘特圖
+| 項目 | 需求 |
+|------|------|
+| **作業系統** | Windows 10 / 11 (64-bit) |
+| **Python** | 3.10+ |
+| **GPU** | NVIDIA GPU（建議 RTX 3060 12GB 以上） |
+| **VRAM** | 建議 16GB（同時載入 Embedding + Reranker + Whisper + LLM） |
+| **RAM** | 建議 32GB |
+| **Ollama** | 需預先安裝並拉取模型 `qwen3:14b` |
+
+### VRAM 預估
+
+| 元件 | 估算 VRAM |
+|------|-----------|
+| BGE-M3 Embedding (FP16) | ~2 GB |
+| BGE-Reranker-v2-m3 (FP16) | ~1.5 GB |
+| Whisper large-v3-turbo (FP16) | ~3 GB（後端啟動時載入） |
+| Ollama Qwen3:14B | ~9 GB |
+| **合計** | **~15.5 GB** |
+
+> Whisper 會在後端啟動時載入 GPU；轉錄前系統會主動卸載 Ollama 模型並清理 CUDA 快取，以降低同時載入多個模型造成的 VRAM 壓力。
+
+---
+
+## 安裝與啟動
+
+### 1. 安裝 Ollama 並拉取模型
+
+```bash
+# 安裝 Ollama：https://ollama.com/download
+ollama pull qwen3:14b
+```
+
+### 2. 建立虛擬環境並安裝套件
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+> 注意：PyTorch 需安裝 CUDA 版本。若直接執行 `pip install -r requirements.txt` 時找不到 `torch` / `torchaudio` / `torchvision` 的 CUDA 套件，請先至 [PyTorch 官網](https://pytorch.org/) 取得對應 CUDA 版本的安裝指令，再安裝其餘套件。
+
+### 3. 啟動服務
+
+```bash
+cd backend
+venv\Scripts\activate
+uvicorn main:app --reload
+```
+
+服務啟動後，開啟瀏覽器前往 `http://localhost:8000` 即可使用。
+
+> 首次啟動會自動下載 AI 模型（BGE-M3、BGE-Reranker、Whisper），需要穩定網路連線。
+
+---
+
+## API 一覽
+
+### 筆記本管理
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `GET` | `/api/notebooks/` | 取得所有筆記本列表 |
+| `POST` | `/api/notebooks/` | 建立新筆記本 |
+| `PUT` | `/api/notebooks/{id}` | 修改筆記本名稱 |
+| `GET` | `/api/notebooks/{id}` | 取得筆記本詳細資料（來源、對話、推薦問題） |
+| `DELETE` | `/api/notebooks/{id}` | 刪除筆記本及所有關聯資料 |
+
+### 來源管理
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `POST` | `/upload-audio/` | 上傳音檔（自動轉錄 + 摘要 + 向量化） |
+| `GET` | `/api/notebooks/{id}/sources/{sid}/transcript` | 取得來源逐字稿 |
+| `PUT` | `/api/notebooks/{id}/sources/{sid}/transcript` | 修正逐字稿並重新索引 |
+| `GET` | `/api/notebooks/{id}/sources/{sid}/audio` | 下載來源音檔 |
+| `PUT` | `/api/notebooks/{id}/sources/{sid}/filename` | 修改來源檔名 |
+| `DELETE` | `/api/notebooks/{id}/sources/{sid}` | 刪除來源（同步刪除向量 + 音檔） |
+
+### 問答
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `POST` | `/ask-question/` | RAG 知識庫問答 |
+| `POST` | `/api/notebooks/{id}/suggested-questions/{qid}/used` | 標記推薦問題為已使用 |
+
+### 系統維護
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `GET` | `/api/data-consistency` | 資料一致性檢查 |
+| `POST` | `/api/maintenance/clear-orphan-chroma` | 清除孤兒 Chroma 索引 |
+
+---
+
+## 資料庫結構
+
+### SQLite（`notebooks.db`）
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4A90D9', 'primaryTextColor': '#000', 'primaryBorderColor': '#2C5F8A', 'secondaryColor': '#6FCF97', 'tertiaryColor': '#F2C94C', 'taskTextColor': '#000', 'taskTextOutsideColor': '#333', 'sectionBkgColor': '#E8EEF5', 'sectionBkgColor2': '#F5F0E1', 'gridColor': '#CCCCCC', 'doneTaskBkgColor': '#A8D5A2', 'doneTaskBorderColor': '#5B9A5B', 'activeTaskBkgColor': '#81B1DB', 'activeTaskBorderColor': '#3A7BBF', 'taskBkgColor': '#D6E4F0', 'taskBorderColor': '#4A90D9', 'titleColor': '#333', 'todayLineColor': '#E83737'}}}%%
-gantt
-    title VoiceRAG 專案開發甘特圖
-    dateFormat YYYY-MM-DD
-    axisFormat %m/%d
+%%{init: {"theme": "base", "themeVariables": {"background": "#111827", "primaryColor": "#1f2937", "primaryTextColor": "#f8fafc", "primaryBorderColor": "#64748b", "lineColor": "#94a3b8", "secondaryColor": "#374151", "tertiaryColor": "#111827", "tertiaryTextColor": "#f8fafc", "textColor": "#f8fafc", "entityBkg": "#1f2937", "entityTextColor": "#f8fafc", "attributeBackgroundColorOdd": "#1f2937", "attributeBackgroundColorEven": "#374151", "attributeTextColor": "#f8fafc"}}}%%
+erDiagram
+    notebooks {
+        TEXT id PK "UUID"
+        TEXT name "筆記本名稱"
+        TEXT icon "Emoji 圖示"
+        TEXT updated_at "最後更新時間"
+    }
 
-    section 需求分析
-    需求訪談與痛點分析       :done, req1, 2026-02-23, 5d
-    功能需求確認與文件撰寫   :done, req2, after req1, 4d
+    sources {
+        TEXT id PK "UUID"
+        TEXT notebook_id FK "所屬筆記本"
+        TEXT filename "音檔名稱"
+        TEXT added_at "上傳時間"
+        TEXT transcript_text "完整逐字稿"
+        TEXT timed_segments "時間戳 JSON"
+        TEXT transcript_updated_at "逐字稿修改時間"
+        TEXT indexed_at "最後索引時間"
+    }
 
-    section UI/UX 設計
-    介面原型設計 Wireframe    :done, ui1, 2026-03-03, 5d
-    前端頁面切版實作          :done, ui2, after ui1, 5d
+    messages {
+        INTEGER id PK "自增"
+        TEXT notebook_id FK "所屬筆記本"
+        TEXT sender "User / AI"
+        TEXT text "訊息內容"
+        TEXT created_at "建立時間"
+        TEXT references_json "引用來源 JSON"
+    }
 
-    section 後端開發
-    FastAPI 架構建立          :done, dev1, 2026-03-10, 3d
-    Whisper 語音辨識整合      :done, dev2, after dev1, 5d
-    Ollama LLM 知識整理整合   :done, dev3, after dev2, 4d
-    ChromaDB 向量庫整合       :done, dev4, after dev3, 4d
-    RAG 問答流程串接          :done, dev5, after dev4, 5d
+    suggested_questions {
+        INTEGER id PK "自增"
+        TEXT notebook_id FK "所屬筆記本"
+        TEXT source_filename "來源檔名"
+        TEXT question "推薦問題"
+        INTEGER priority "優先序"
+        INTEGER used "是否已使用"
+        TEXT created_at "建立時間"
+    }
 
-    section 前後端整合
-    API 對接與聯調            :done, int1, 2026-04-07, 5d
-    即時錄音功能開發          :active, int2, after int1, 5d
-
-    section 測試階段
-    功能測試與除錯            :active, test1, 2026-04-17, 5d
-    效能優化與壓力測試        :test2, after test1, 3d
-
-    section 上線與交付
-    部署文件撰寫              :doc1, 2026-04-25, 3d
-    專題報告製作與口頭報告    :doc2, after doc1, 5d
-
+    notebooks ||--o{ sources : "擁有"
+    notebooks ||--o{ messages : "擁有"
+    notebooks ||--o{ suggested_questions : "擁有"
 ```
 
-### 6.2 階段性里程碑
+### ChromaDB
 
-| 階段 | 時間 | 里程碑 | 交付物 |
-|------|------|--------|--------|
-| **M1** | Week 1-2 | 需求分析完成 | 需求規格書、用戶故事 |
-| **M2** | Week 3-4 | UI/UX 設計完成 | 介面原型、前端頁面 |
-| **M3** | Week 4-7 | 後端核心開發完成 | 語音辨識 + LLM + 向量庫 API |
-| **M4** | Week 7-8 | 前後端整合完成 | 可運作的完整系統 |
-| **M5** | Week 8-9 | 測試與優化完成 | 測試報告、優化記錄 |
-| **M6** | Week 10 | 專題交付 | 企劃書、簡報、Demo |
+每個筆記本對應一個獨立 Collection（`notebook_{id}`），每個文件片段包含：
 
----
-
-## 7. 風險評估與因應策略
-
-| 風險項目 | 影響程度 | 發生機率 | 因應策略 |
-|----------|----------|----------|----------|
-| GPU 記憶體不足 | 高 | 中 | 改用 Whisper medium 模型或 int8 量化 |
-| 中文語音辨識準確率不佳 | 高 | 低 | 調整 beam_size 與 initial_prompt 參數 |
-| LLM 回答品質不穩定 | 中 | 中 | 優化 Prompt 工程、增加 few-shot 範例 |
-| 向量檢索結果不精準 | 中 | 中 | 調整 chunk_size 與 overlap 參數 |
-| Ollama 服務未啟動 | 低 | 低 | 加入服務健康檢查與錯誤提示 |
+| 欄位 | 說明 |
+|------|------|
+| `id` | `{source_id}_chunk_{index}_{隨機碼}` |
+| `embedding` | 1024 維向量（BGE-M3 FP16） |
+| `document` | 知識片段文字 |
+| `metadata.source` | 來源檔名 |
+| `metadata.source_id` | 來源 UUID |
+| `metadata.chunk_index` | 片段序號 |
+| `metadata.char_start` / `char_end` | 在逐字稿中的字元位置 |
+| `metadata.start_time` / `end_time` | 對應音檔的時間範圍（秒） |
+| `metadata.time_range` | 格式化時間文字（如 `02:13-02:48`） |
 
 ---
 
-> **本企劃書版本**：v1.0 ｜ **最後更新**：2026/04/28
+## 已知限制與注意事項
+
+- **GPU 必要**：Whisper、Embedding、Reranker 均依賴 CUDA GPU，無 GPU 環境無法正常運行
+- **模型載入順序**：`sentence_transformers` 必須先於 `faster_whisper` 載入，否則 Windows 下會因 DLL / OpenMP 衝突導致無聲崩潰（詳見 [troubleshooting_log.md](docs/troubleshooting_log.md)）
+- **Ollama 必須運行**：啟動前需確認 Ollama 服務可用且已拉取 `qwen3:14b` 模型
+- **VRAM 管理**：系統會在轉錄前主動卸載 Ollama 模型以釋放 VRAM，避免 OOM 崩潰
+- **單人使用設計**：目前未實作使用者認證與多人並行機制
+
+---
+
+## 技術亮點
+
+### 語意切分（Semantic Chunking）
+**讓每個片段保留完整語意。** 文字超過 200 字時，系統使用 BGE-M3 計算相鄰句子的語意相似度，在語意斷裂點切分，避免只用固定長度切割造成上下文破碎。
+
+### 四階段混合檢索 + 引用過濾
+**提升找得到與找得準的機率。** 系統結合 Dense 向量檢索、BM25 關鍵字檢索、RRF 融合與 Reranker 精排，從 20 份候選中篩選至 Top-5。回答後再過濾引用，只保留真正支撐答案的來源。
+
+### GPU 記憶體動態管理
+**降低多模型同時執行的 VRAM 壓力。** Whisper、Embedding 與 Reranker 會在後端啟動時載入 GPU。轉錄音檔前，系統會呼叫 Ollama API 卸載 LLM 模型（`keep_alive=0`），並清空 CUDA 快取、觸發 GC，降低 OOM 風險。
+
+### 模型正文清理
+**讓回答正文與引用區塊分工清楚。** AI 回答後，系統會自動移除模型自行產生的「參考來源」、「資料來源」等文字，引用統一由前端控制顯示，避免重複或格式混亂。
+
+---
+
+## 競品比較
+
+| 功能 | VoiceRAG | NotebookLM | Notion AI | 訊飛聽見 |
+|------|----------|------------|-----------|----------|
+| 語音轉文字 | ✅ 本地端 GPU | ✅ 雲端 | ❌ | ✅ 雲端 |
+| AI 知識結構化 | ✅ | ✅ | ✅ | ⚠️ 有限 |
+| RAG 知識問答 | ✅ 混合檢索 + 精排 | ✅ 雲端 | ⚠️ 有限 | ❌ |
+| 來源引用追溯 | ✅ 含時間戳 | ✅ | ❌ | ❌ |
+| 資料隱私 | ✅ 全本地 | ❌ 雲端 | ❌ 雲端 | ❌ 雲端 |
+| 繁體中文 | ✅ 專案優化 | ✅ | ✅ | ⚠️ 以簡體情境較常見 |
+| 費用 | 本機硬體成本 | 依服務方案 | 月費制 | 按量或方案計費 |
+
+---
+
+> **VoiceRAG** · 資訊管理學系畢業專題 
