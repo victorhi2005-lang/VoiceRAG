@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import sqlite3
 import uuid
 from collections.abc import Iterable
 from typing import Any, cast
@@ -15,7 +17,9 @@ from db import append_qa_messages, get_recent_messages, get_source_update_info, 
 from models import embeddings_model, reranker
 
 
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CHROMA_PATH = os.path.join(BASE_DIR, "chroma_db")
+chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
 
 Metadata = dict[str, Any]
@@ -113,11 +117,148 @@ def clear_bm25_index(notebook_id: str) -> None:
     bm25_metas.pop(notebook_id, None)
 
 
-def delete_notebook_collection(notebook_id: str) -> None:
+def get_collection_segment_ids(collection_name: str) -> list[str]:
+    db_path = os.path.join(CHROMA_PATH, "chroma.sqlite3")
+    if not os.path.exists(db_path):
+        return []
+
     try:
-        chroma_client.delete_collection(name=f"notebook_{notebook_id}")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT s.id
+            FROM segments s
+            JOIN collections c ON s.collection = c.id
+            WHERE c.name = ?
+            """,
+            (collection_name,)
+        )
+        segment_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return segment_ids
+    except Exception:
+        return []
+
+
+def delete_chroma_segment_directory(segment_id: str) -> bool:
+    try:
+        uuid.UUID(segment_id)
+    except Exception:
+        return False
+
+    root = os.path.abspath(CHROMA_PATH)
+    segment_path = os.path.abspath(os.path.join(root, segment_id))
+    if os.path.commonpath([root, segment_path]) != root:
+        return False
+    if not os.path.isdir(segment_path):
+        return False
+
+    allowed_files = {"data_level0.bin", "header.bin", "length.bin", "link_lists.bin"}
+    children = os.listdir(segment_path)
+    for child in children:
+        child_path = os.path.join(segment_path, child)
+        if os.path.isdir(child_path) or child not in allowed_files:
+            return False
+
+    try:
+        for child in children:
+            os.remove(os.path.join(segment_path, child))
+        os.rmdir(segment_path)
+        return True
+    except OSError:
+        return False
+
+
+def get_all_chroma_segment_ids() -> list[str]:
+    db_path = os.path.join(CHROMA_PATH, "chroma.sqlite3")
+    if not os.path.exists(db_path):
+        return []
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM segments")
+        segment_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return segment_ids
+    except Exception:
+        return []
+
+
+def delete_orphan_chroma_segment_directories() -> list[str]:
+    active_segment_ids = set(get_all_chroma_segment_ids())
+    deleted_dirs: list[str] = []
+    root = os.path.abspath(CHROMA_PATH)
+    if not os.path.isdir(root):
+        return deleted_dirs
+
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            uuid.UUID(name)
+        except Exception:
+            continue
+        if name in active_segment_ids:
+            continue
+        try:
+            if delete_chroma_segment_directory(name):
+                deleted_dirs.append(name)
+        except Exception:
+            pass
+
+    return deleted_dirs
+
+
+def get_orphan_chroma_segment_directories() -> list[str]:
+    active_segment_ids = set(get_all_chroma_segment_ids())
+    orphan_dirs: list[str] = []
+    root = os.path.abspath(CHROMA_PATH)
+    if not os.path.isdir(root):
+        return orphan_dirs
+
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            uuid.UUID(name)
+        except Exception:
+            continue
+        if name not in active_segment_ids:
+            orphan_dirs.append(name)
+
+    return orphan_dirs
+
+
+def clear_orphan_chroma_segments() -> dict[str, Any]:
+    deleted_segment_dirs = delete_orphan_chroma_segment_directories()
+    remaining_orphan_segment_dirs = get_orphan_chroma_segment_directories()
+    return {
+        "deleted_segment_dirs": deleted_segment_dirs,
+        "remaining_orphan_segment_dirs": remaining_orphan_segment_dirs,
+        "needs_restart": bool(remaining_orphan_segment_dirs)
+    }
+
+
+def delete_notebook_collection(notebook_id: str) -> None:
+    collection_name = f"notebook_{notebook_id}"
+    segment_ids = get_collection_segment_ids(collection_name)
+    deleted_collection = False
+    try:
+        chroma_client.delete_collection(name=collection_name)
+        deleted_collection = True
     except Exception:
         pass
+    if deleted_collection:
+        for segment_id in segment_ids:
+            try:
+                delete_chroma_segment_directory(segment_id)
+            except Exception:
+                pass
+    delete_orphan_chroma_segment_directories()
     clear_bm25_index(notebook_id)
 
 
@@ -479,9 +620,10 @@ def chunk_transcript_text(transcript_text):
 
 def delete_source_chunks(collection, source_id):
     """刪除指定來源的舊向量片段，不直接操作 ChromaDB 檔案"""
+    deleted_count = count_source_chunks(collection, source_id)
     try:
         collection.delete(where={"source_id": source_id})
-        return
+        return deleted_count
     except Exception:
         pass
 
@@ -496,6 +638,88 @@ def delete_source_chunks(collection, source_id):
             collection.delete(ids=ids_to_delete)
     except Exception:
         pass
+    return deleted_count
+
+
+def count_source_chunks(collection, source_id):
+    try:
+        existing = cast(dict[str, Any], collection.get(
+            where={"source_id": source_id},
+            include=["metadatas"]
+        ))
+        return len(existing.get("ids") or [])
+    except Exception:
+        pass
+
+    try:
+        existing = cast(dict[str, Any], collection.get(include=["metadatas"]))
+        return sum(
+            1
+            for metadata in existing.get("metadatas", [])
+            if metadata and metadata.get("source_id") == source_id
+        )
+    except Exception:
+        return 0
+
+
+def delete_source_from_index(notebook_id, source_id):
+    collection = get_notebook_collection(notebook_id)
+    deleted_count = delete_source_chunks(collection, source_id)
+    rebuild_bm25_index(notebook_id)
+    return deleted_count
+
+
+def get_chroma_collection_names():
+    names: list[str] = []
+    try:
+        for collection in chroma_client.list_collections():
+            if isinstance(collection, str):
+                names.append(collection)
+            else:
+                names.append(collection.name)
+    except Exception:
+        pass
+    return names
+
+
+def get_chroma_consistency_snapshot():
+    collection_names = get_chroma_collection_names()
+    notebook_collections = [
+        name
+        for name in collection_names
+        if name.startswith("notebook_")
+    ]
+    source_chunks_by_notebook: dict[str, dict[str, Any]] = {}
+    errors: list[dict[str, str]] = []
+
+    for collection_name in notebook_collections:
+        notebook_id = collection_name.replace("notebook_", "", 1)
+        try:
+            collection = chroma_client.get_collection(name=collection_name)
+            data = cast(dict[str, Any], collection.get(include=["metadatas"]))
+            source_counts: dict[str, int] = {}
+            missing_source_id_chunks = 0
+            for metadata in data.get("metadatas", []) or []:
+                source_id = str((metadata or {}).get("source_id", "")).strip()
+                if source_id:
+                    source_counts[source_id] = source_counts.get(source_id, 0) + 1
+                else:
+                    missing_source_id_chunks += 1
+            source_chunks_by_notebook[notebook_id] = {
+                "source_counts": source_counts,
+                "missing_source_id_chunks": missing_source_id_chunks
+            }
+        except Exception as error:
+            errors.append({
+                "collection": collection_name,
+                "message": str(error)
+            })
+
+    return {
+        "collections": notebook_collections,
+        "source_chunks_by_notebook": source_chunks_by_notebook,
+        "errors": errors
+    }
 
 
 def index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments):

@@ -4,7 +4,6 @@ from fastapi.staticfiles import StaticFiles
 
 from db import (
     create_notebook_record,
-    delete_notebook_record,
     get_notebook_details_data,
     get_notebooks_data,
     get_source_transcript_data,
@@ -26,11 +25,18 @@ async def serve_frontend():
 
 init_db()
 
-from audio_service import get_audio_file_path, process_audio_upload, rename_source_filename
+from audio_service import (
+    check_data_consistency,
+    clear_orphan_chroma_data,
+    delete_notebook_data,
+    delete_source_data,
+    get_audio_file_path,
+    process_audio_upload,
+    rename_source_filename,
+)
 from rag_service import (
     SourceNotFoundError,
     answer_question,
-    delete_notebook_collection,
     get_notebook_collection,
     update_source_transcript,
 )
@@ -95,6 +101,14 @@ async def get_source_audio(notebook_id: str, source_id: str):
     return FileResponse(audio["path"], filename=audio["filename"])
 
 
+@app.delete("/api/notebooks/{notebook_id}/sources/{source_id}")
+async def delete_source(notebook_id: str, source_id: str):
+    result = delete_source_data(notebook_id, source_id)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=404, detail=result.get("message", "找不到指定來源"))
+    return result
+
+
 @app.put("/api/notebooks/{notebook_id}/sources/{source_id}/filename")
 async def update_source_filename(notebook_id: str, source_id: str, request: SourceFilenameUpdate):
     result = rename_source_filename(notebook_id, source_id, request.filename)
@@ -103,11 +117,25 @@ async def update_source_filename(notebook_id: str, source_id: str, request: Sour
     return result
 
 
+@app.get("/api/data-consistency")
+async def get_data_consistency():
+    return check_data_consistency()
+
+
+@app.post("/api/maintenance/clear-orphan-chroma")
+async def clear_orphan_chroma_data_endpoint():
+    try:
+        return clear_orphan_chroma_data()
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"清除 Chroma 孤兒索引失敗：{error}")
+
+
 @app.delete("/api/notebooks/{notebook_id}")
 async def delete_notebook(notebook_id: str):
-    delete_notebook_record(notebook_id)
-    delete_notebook_collection(notebook_id)
-    return {"status": "success"}
+    result = delete_notebook_data(notebook_id)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=404, detail=result.get("message", "Notebook not found"))
+    return result
 
 
 @app.post("/upload-audio/")

@@ -4,12 +4,18 @@ import os
 import re
 import shutil
 import uuid
+from typing import Any, cast
 
 import ollama
 import torch
 
 from db import (
+    delete_notebook_record,
+    delete_source_record,
+    get_data_consistency_snapshot,
+    get_notebook_delete_info,
     get_source_audio_info,
+    get_source_delete_info,
     get_source_filenames,
     insert_ai_summary_message,
     insert_source_record,
@@ -17,10 +23,19 @@ from db import (
     update_source_filename_record,
 )
 from models import whisper_model
-from rag_service import generate_suggested_questions, index_source_transcript, update_source_filename_metadata
+from rag_service import (
+    clear_orphan_chroma_segments,
+    delete_notebook_collection,
+    delete_source_from_index,
+    generate_suggested_questions,
+    get_chroma_consistency_snapshot,
+    index_source_transcript,
+    update_source_filename_metadata,
+)
 
 
-UPLOAD_DIR = "audio_uploads"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "audio_uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
@@ -73,6 +88,39 @@ def get_audio_file_path(notebook_id, source_id):
     if not os.path.exists(file_path):
         return None
     return {"path": file_path, "filename": filename}
+
+
+def get_audio_path_for_filename(filename):
+    safe_filename = os.path.basename(filename or "")
+    if not safe_filename:
+        return None
+
+    upload_root = os.path.abspath(UPLOAD_DIR)
+    file_path = os.path.abspath(os.path.join(upload_root, safe_filename))
+    if os.path.commonpath([upload_root, file_path]) != upload_root:
+        return None
+    return file_path
+
+
+def delete_audio_file(filename):
+    file_path = get_audio_path_for_filename(filename)
+    if not file_path or not os.path.exists(file_path):
+        return {"deleted": False, "missing": True, "path": file_path}
+    if not os.path.isfile(file_path):
+        return {"deleted": False, "missing": False, "path": file_path}
+
+    os.remove(file_path)
+    return {"deleted": True, "missing": False, "path": file_path}
+
+
+def list_audio_upload_files():
+    if not os.path.isdir(UPLOAD_DIR):
+        return []
+    return sorted(
+        filename
+        for filename in os.listdir(UPLOAD_DIR)
+        if os.path.isfile(os.path.join(UPLOAD_DIR, filename))
+    )
 
 
 def get_fallback_recording_filename(notebook_id, extension):
@@ -185,6 +233,184 @@ def rename_source_filename(notebook_id, source_id, requested_filename):
             "filename": new_filename,
             "updated_at": updated["updated_at"]
         }
+    }
+
+
+def delete_source_data(notebook_id, source_id):
+    source = get_source_delete_info(notebook_id, source_id)
+    if not source:
+        return {"status": "error", "message": "找不到指定來源。"}
+
+    deleted_chunks = delete_source_from_index(notebook_id, source_id)
+    deleted_record = delete_source_record(notebook_id, source_id)
+    if not deleted_record:
+        return {"status": "error", "message": "找不到指定來源。"}
+
+    audio_result = delete_audio_file(source["filename"])
+    return {
+        "status": "success",
+        "source": {
+            "id": source_id,
+            "filename": source["filename"]
+        },
+        "deleted_chunks": deleted_chunks,
+        "audio_deleted": audio_result["deleted"],
+        "audio_missing": audio_result["missing"]
+    }
+
+
+def delete_notebook_data(notebook_id):
+    notebook = get_notebook_delete_info(notebook_id)
+    if not notebook:
+        return {"status": "error", "message": "Notebook not found"}
+
+    delete_notebook_collection(notebook_id)
+
+    audio_results = []
+    for source in notebook["sources"]:
+        audio_result = delete_audio_file(source["filename"])
+        audio_results.append({
+            "source_id": source["id"],
+            "filename": source["filename"],
+            "deleted": audio_result["deleted"],
+            "missing": audio_result["missing"]
+        })
+
+    delete_notebook_record(notebook_id)
+    return {
+        "status": "success",
+        "notebook": {
+            "id": notebook_id,
+            "name": notebook["name"]
+        },
+        "deleted_sources": len(notebook["sources"]),
+        "audio_results": audio_results
+    }
+
+
+def check_data_consistency():
+    sqlite_snapshot = get_data_consistency_snapshot()
+    chroma_snapshot = cast(dict[str, Any], get_chroma_consistency_snapshot())
+    audio_files = set(list_audio_upload_files())
+
+    notebooks = sqlite_snapshot["notebooks"]
+    sources = sqlite_snapshot["sources"]
+    notebook_ids = {notebook["id"] for notebook in notebooks}
+    source_ids = {source["id"] for source in sources}
+    source_filenames = {os.path.basename(source["filename"] or "") for source in sources}
+    chroma_collections = set(chroma_snapshot["collections"])
+    source_chunks_by_notebook = cast(dict[str, dict[str, Any]], chroma_snapshot["source_chunks_by_notebook"])
+    issues = []
+
+    for source in sources:
+        filename = os.path.basename(source["filename"] or "")
+        audio_path = get_audio_path_for_filename(filename)
+        if not audio_path or not os.path.exists(audio_path):
+            issues.append({
+                "type": "sqlite_source_missing_audio",
+                "severity": "warning",
+                "notebook_id": source["notebook_id"],
+                "source_id": source["id"],
+                "filename": source["filename"],
+                "message": "SQLite 有來源紀錄，但 audio_uploads 找不到對應音檔。"
+            })
+
+        chunk_info = source_chunks_by_notebook.get(source["notebook_id"], {})
+        notebook_chunks = cast(dict[str, int], chunk_info.get("source_counts", {}))
+        if notebook_chunks.get(source["id"], 0) == 0:
+            issues.append({
+                "type": "sqlite_source_missing_chroma_chunks",
+                "severity": "warning",
+                "notebook_id": source["notebook_id"],
+                "source_id": source["id"],
+                "filename": source["filename"],
+                "message": "SQLite 有來源紀錄，但 ChromaDB 沒有對應知識片段。"
+            })
+
+    for notebook in notebooks:
+        collection_name = f"notebook_{notebook['id']}"
+        if collection_name not in chroma_collections:
+            issues.append({
+                "type": "sqlite_notebook_missing_chroma_collection",
+                "severity": "info",
+                "notebook_id": notebook["id"],
+                "notebook_name": notebook["name"],
+                "collection": collection_name,
+                "message": "SQLite 有筆記本紀錄，但 ChromaDB 沒有對應 collection。"
+            })
+
+    for collection_name in chroma_collections:
+        notebook_id = collection_name.replace("notebook_", "", 1)
+        if notebook_id not in notebook_ids:
+            issues.append({
+                "type": "orphan_chroma_collection",
+                "severity": "warning",
+                "notebook_id": notebook_id,
+                "collection": collection_name,
+                "message": "ChromaDB 有 collection，但 SQLite 沒有對應筆記本。"
+            })
+
+    for notebook_id, chunk_info in source_chunks_by_notebook.items():
+        source_counts = cast(dict[str, int], chunk_info.get("source_counts", {}))
+        for source_id, chunk_count in source_counts.items():
+            if source_id not in source_ids:
+                issues.append({
+                    "type": "orphan_chroma_chunks",
+                    "severity": "warning",
+                    "notebook_id": notebook_id,
+                    "source_id": source_id,
+                    "chunk_count": chunk_count,
+                    "message": "ChromaDB 有 source_id chunks，但 SQLite sources 找不到對應來源。"
+                })
+        missing_source_id_chunks = int(chunk_info.get("missing_source_id_chunks", 0))
+        if missing_source_id_chunks:
+            issues.append({
+                "type": "chroma_chunks_missing_source_id",
+                "severity": "warning",
+                "notebook_id": notebook_id,
+                "chunk_count": missing_source_id_chunks,
+                "message": "ChromaDB 有 chunks 缺少 source_id metadata。"
+            })
+
+    for filename in sorted(audio_files - source_filenames):
+        issues.append({
+            "type": "orphan_audio_file",
+            "severity": "info",
+            "filename": filename,
+            "message": "audio_uploads 有音檔，但 SQLite sources 沒有對應紀錄。"
+        })
+
+    for error in chroma_snapshot["errors"]:
+        issues.append({
+            "type": "chroma_collection_read_error",
+            "severity": "warning",
+            "collection": error["collection"],
+            "message": error["message"]
+        })
+
+    return {
+        "status": "ok" if not issues else "warning",
+        "summary": {
+            "notebooks": len(notebooks),
+            "sources": len(sources),
+            "audio_files": len(audio_files),
+            "chroma_collections": len(chroma_collections),
+            "issues": len(issues)
+        },
+        "issues": issues
+    }
+
+
+def clear_orphan_chroma_data():
+    chroma_result = clear_orphan_chroma_segments()
+    return {
+        "status": "success",
+        "needs_restart": bool(chroma_result["needs_restart"]),
+        "summary": {
+            "chroma_segment_dirs_deleted": len(chroma_result["deleted_segment_dirs"]),
+            "chroma_segment_dirs_remaining": len(chroma_result["remaining_orphan_segment_dirs"]),
+        },
+        "chroma": chroma_result
     }
 
 

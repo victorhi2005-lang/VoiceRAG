@@ -261,7 +261,48 @@ uvicorn main:app --reload
 ### SQLite（`notebooks.db`）
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"background": "#111827", "primaryColor": "#1f2937", "primaryTextColor": "#f8fafc", "primaryBorderColor": "#64748b", "lineColor": "#94a3b8", "secondaryColor": "#1f2937", "tertiaryColor": "#1f2937", "tertiaryTextColor": "#f8fafc", "textColor": "#f8fafc", "entityBkg": "#1f2937", "entityTextColor": "#f8fafc", "attributeBackgroundColorOdd": "#1f2937", "attributeBackgroundColorEven": "#1f2937", "attributeTextColor": "#f8fafc"}}}%%
+%%{
+  init: {
+    "theme": "base",
+    "themeVariables": {
+      "background": "#000000",
+      "primaryColor": "#000000",
+      "primaryTextColor": "#ffffff",
+      "primaryBorderColor": "#ffffff",
+      "lineColor": "#ffffff",
+      "textColor": "#ffffff",
+      "entityBkg": "#000000",
+      "entityTextColor": "#ffffff",
+      "attributeBackgroundColorOdd": "#000000",
+      "attributeBackgroundColorEven": "#000000",
+      "attributeTextColor": "#ffffff"
+    },
+    "themeCSS": "
+      .er.entityBox {
+        fill: #000000 !important;
+        stroke: #ffffff !important;
+      }
+
+      .er.attributeBoxOdd,
+      .er.attributeBoxEven {
+        fill: #000000 !important;
+        stroke: #ffffff !important;
+      }
+
+      .er.entityLabel,
+      .er.attributeLabel,
+      .er.relationshipLabel {
+        fill: #ffffff !important;
+        color: #ffffff !important;
+      }
+
+      .er.relationshipLine {
+        stroke: #ffffff !important;
+      }
+    "
+  }
+}%%
+
 erDiagram
     notebooks {
         TEXT id PK "UUID"

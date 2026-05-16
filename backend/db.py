@@ -1,10 +1,12 @@
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime
 
 
-DB_PATH = "notebooks.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "notebooks.db")
 
 
 def get_connection():
@@ -279,6 +281,56 @@ def get_source_audio_info(notebook_id, source_id):
     return {"id": row[0], "filename": row[1]}
 
 
+def get_source_delete_info(notebook_id, source_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, filename
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "filename": row[1]}
+
+
+def get_notebook_delete_info(notebook_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, name FROM notebooks WHERE id = ?",
+        (notebook_id,)
+    )
+    notebook_row = cursor.fetchone()
+    if not notebook_row:
+        conn.close()
+        return None
+
+    cursor.execute(
+        """
+        SELECT id, filename
+        FROM sources
+        WHERE notebook_id = ?
+        """,
+        (notebook_id,)
+    )
+    sources = [
+        {"id": row[0], "filename": row[1]}
+        for row in cursor.fetchall()
+    ]
+    conn.close()
+    return {
+        "id": notebook_row[0],
+        "name": notebook_row[1],
+        "sources": sources
+    }
+
+
 def get_source_filenames(notebook_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -346,6 +398,32 @@ def update_source_transcript_record(notebook_id, source_id, transcript_text):
     return now
 
 
+def delete_source_record(notebook_id, source_id):
+    source = get_source_delete_info(notebook_id, source_id)
+    if not source:
+        return None
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM sources WHERE id = ? AND notebook_id = ?",
+        (source_id, notebook_id)
+    )
+    cursor.execute(
+        "DELETE FROM suggested_questions WHERE notebook_id = ? AND source_filename = ?",
+        (notebook_id, source["filename"])
+    )
+    cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
+    conn.commit()
+    conn.close()
+    return {
+        "id": source["id"],
+        "filename": source["filename"],
+        "updated_at": now
+    }
+
+
 def delete_notebook_record(notebook_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -353,6 +431,38 @@ def delete_notebook_record(notebook_id):
     cursor.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
     conn.commit()
     conn.close()
+
+
+def clear_all_records():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.execute("DELETE FROM suggested_questions")
+    cursor.execute("DELETE FROM messages")
+    cursor.execute("DELETE FROM sources")
+    cursor.execute("DELETE FROM notebooks")
+    cursor.execute(
+        "DELETE FROM sqlite_sequence WHERE name IN ('messages', 'suggested_questions')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_data_consistency_snapshot():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM notebooks")
+    notebooks = [
+        {"id": row[0], "name": row[1]}
+        for row in cursor.fetchall()
+    ]
+    cursor.execute("SELECT id, notebook_id, filename FROM sources")
+    sources = [
+        {"id": row[0], "notebook_id": row[1], "filename": row[2]}
+        for row in cursor.fetchall()
+    ]
+    conn.close()
+    return {"notebooks": notebooks, "sources": sources}
 
 
 def insert_source_record(notebook_id, source_id, filename, transcript_text, timed_segments_json):
