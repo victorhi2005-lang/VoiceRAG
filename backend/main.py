@@ -1,6 +1,14 @@
+import sys
+from pathlib import Path
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 from db import (
     create_notebook_record,
@@ -15,12 +23,14 @@ from schemas import NotebookUpdate, QuestionRequest, SourceFilenameUpdate, Trans
 
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
+STATIC_DIR = BASE_DIR / "static"
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
 async def serve_frontend():
-    return FileResponse("static/index.html")
+    return FileResponse(str(STATIC_DIR / "index.html"))
 
 
 init_db()

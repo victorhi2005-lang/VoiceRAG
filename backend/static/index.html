@@ -101,6 +101,9 @@
 </head>
 
 <body class="flex h-screen overflow-hidden font-sans relative">
+    <div id="toast-region"
+        class="fixed right-4 top-4 z-[80] w-[min(24rem,calc(100vw-2rem))] space-y-3 pointer-events-none"
+        aria-live="polite" aria-atomic="false"></div>
 
     <!-- 筆記本導覽首頁 (Dashboard View) -->
     <div id="dashboard-view" class="absolute inset-0 z-20 flex flex-col p-10 overflow-y-auto bg-[#131314]">
@@ -366,6 +369,126 @@
                 .replace(/'/g, '&#039;');
         }
 
+        async function readSuccessfulApiResponse(res, fallbackMessage) {
+            const responseText = await res.text();
+            let data = {};
+
+            try {
+                data = responseText ? JSON.parse(responseText) : {};
+            } catch (parseError) {
+                data = { message: responseText };
+            }
+
+            if (!res.ok || data.status !== 'success') {
+                throw new Error(data.detail || data.message || fallbackMessage);
+            }
+
+            return data;
+        }
+
+        function showToast({ tone = 'info', title, message = '', details = [] }) {
+            const region = document.getElementById('toast-region');
+            if (!region) return;
+
+            const styles = {
+                success: {
+                    card: 'border-green-500/30 bg-green-950/80 text-green-100',
+                    dot: 'bg-green-400'
+                },
+                error: {
+                    card: 'border-red-500/30 bg-red-950/80 text-red-100',
+                    dot: 'bg-red-400'
+                },
+                info: {
+                    card: 'border-blue-500/30 bg-blue-950/80 text-blue-100',
+                    dot: 'bg-blue-400'
+                }
+            };
+            const selected = styles[tone] || styles.info;
+
+            const toast = document.createElement('div');
+            toast.className = `pointer-events-auto rounded-xl border ${selected.card} shadow-2xl backdrop-blur px-4 py-3 transition duration-200`;
+
+            const header = document.createElement('div');
+            header.className = 'flex items-start gap-3';
+
+            const dot = document.createElement('span');
+            dot.className = `mt-1.5 h-2.5 w-2.5 rounded-full shrink-0 ${selected.dot}`;
+            header.appendChild(dot);
+
+            const content = document.createElement('div');
+            content.className = 'min-w-0 flex-1 space-y-1';
+
+            const titleEl = document.createElement('div');
+            titleEl.className = 'text-sm font-semibold leading-5';
+            titleEl.textContent = title;
+            content.appendChild(titleEl);
+
+            if (message) {
+                const messageEl = document.createElement('p');
+                messageEl.className = 'text-sm leading-5 text-gray-200';
+                messageEl.textContent = message;
+                content.appendChild(messageEl);
+            }
+
+            const validDetails = (details || []).filter(Boolean);
+            if (validDetails.length > 0) {
+                const list = document.createElement('ul');
+                list.className = 'mt-2 space-y-1 text-xs leading-5 text-gray-300';
+                validDetails.forEach(detail => {
+                    const item = document.createElement('li');
+                    item.textContent = detail;
+                    list.appendChild(item);
+                });
+                content.appendChild(list);
+            }
+
+            header.appendChild(content);
+
+            const closeButton = document.createElement('button');
+            closeButton.type = 'button';
+            closeButton.className = 'rounded-md p-1 text-gray-300 hover:bg-white/10 hover:text-white transition';
+            closeButton.title = '關閉提示';
+            closeButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="h-4 w-4"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>';
+            closeButton.onclick = () => dismissToast(toast);
+            header.appendChild(closeButton);
+
+            toast.appendChild(header);
+            region.appendChild(toast);
+            window.setTimeout(() => dismissToast(toast), tone === 'error' ? 10000 : 7000);
+        }
+
+        function dismissToast(toast) {
+            if (!toast || toast.dataset.closing === 'true') return;
+            toast.dataset.closing = 'true';
+            toast.classList.add('opacity-0', 'translate-y-1');
+            window.setTimeout(() => toast.remove(), 200);
+        }
+
+        function setButtonBusy(button, isBusy) {
+            if (!button) return;
+            button.disabled = isBusy;
+            button.classList.toggle('opacity-50', isBusy);
+            button.classList.toggle('cursor-not-allowed', isBusy);
+        }
+
+        function getAudioDeleteText(deleted, missing) {
+            if (deleted) return '音檔：已刪除';
+            if (missing) return '音檔：原本不存在或已被移除';
+            return '音檔：未刪除，可能不是一般檔案或目前被系統保護';
+        }
+
+        function getSourceDeleteDetails(data) {
+            return [
+                `知識庫索引：已刪除 ${data.deleted_chunks || 0} 個片段`,
+                getAudioDeleteText(data.audio_deleted, data.audio_missing)
+            ];
+        }
+
+        function getNotebookDeleteDetails(data) {
+            return [`來源紀錄：已刪除 ${data.deleted_sources || 0} 個來源`];
+        }
+
         function renderInlineMarkdown(text) {
             return text
                 .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -468,6 +591,7 @@
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'block text-left text-gray-300 underline underline-offset-4 decoration-gray-500 hover:text-white hover:decoration-blue-300 transition';
+                button.dataset.referenceSourceId = reference.source_id;
                 button.textContent = `${index + 1}. ${reference.source || reference.label || '未知來源'}`;
                 button.onclick = () => openTranscriptModal(reference.source_id);
                 list.appendChild(button);
@@ -537,10 +661,12 @@
                 const data = await res.json();
                 if (data.status === 'success') {
                     renderNotebooks(data.notebooks);
+                    return true;
                 }
             } catch (err) {
                 console.error("無法載入筆記本", err);
             }
+            return false;
         }
 
         // 渲染筆記本卡片
@@ -598,7 +724,7 @@
                 deleteButton.innerHTML = '<svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg><span>刪除</span>';
                 deleteButton.onclick = (event) => {
                     event.stopPropagation();
-                    deleteNotebook(nb.id);
+                    deleteNotebook(nb, deleteButton);
                 };
 
                 dropdownContent.appendChild(renameButton);
@@ -625,10 +751,44 @@
             });
         }
 
+        function updateSourcesEmptyState() {
+            const sourcesList = document.getElementById('sourcesList');
+            if (!sourcesList) return;
+
+            const hasVisibleSources = Boolean(sourcesList.querySelector('.source-item, .upload-source-temp'));
+            let emptyState = document.getElementById('sourcesEmptyState');
+
+            if (hasVisibleSources) {
+                if (emptyState) emptyState.remove();
+                return;
+            }
+
+            if (!emptyState) {
+                emptyState = document.createElement('div');
+                emptyState.id = 'sourcesEmptyState';
+                emptyState.className = 'rounded-lg border border-dashed border-[#3a3d44] px-3 py-4 text-sm leading-6 text-gray-500';
+                emptyState.textContent = '目前沒有來源。新增錄音或上傳音檔後，來源會顯示在這裡。';
+                sourcesList.appendChild(emptyState);
+            }
+        }
+
+        function markDeletedSourceReferences(sourceId) {
+            document.querySelectorAll('[data-reference-source-id]').forEach(button => {
+                if (button.dataset.referenceSourceId !== sourceId) return;
+                button.disabled = true;
+                button.onclick = null;
+                button.classList.remove('hover:text-white', 'hover:decoration-blue-300');
+                button.classList.add('cursor-not-allowed', 'text-gray-500', 'decoration-gray-700');
+                if (!button.textContent.includes('已刪除')) {
+                    button.textContent = `${button.textContent}（已刪除）`;
+                }
+            });
+        }
+
         function createSourceElement(source) {
             const item = document.createElement('div');
             item.id = `source-item-${source.id}`;
-            item.className = 'w-full text-base text-gray-300 p-1 rounded hover:bg-[#333] transition space-y-1';
+            item.className = 'source-item w-full text-base text-gray-300 p-1 rounded hover:bg-[#333] transition space-y-1';
 
             const row = document.createElement('div');
             row.className = 'w-full flex items-center gap-1';
@@ -684,7 +844,7 @@
             deleteButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673A2.25 2.25 0 0 1 15.916 21H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>';
             deleteButton.onclick = (event) => {
                 event.stopPropagation();
-                deleteSource(source);
+                deleteSource(source, deleteButton);
             };
 
             const progressPanel = document.createElement('div');
@@ -911,6 +1071,7 @@
                     data.sources.forEach(source => {
                         sourcesList.appendChild(createSourceElement(source));
                     });
+                    updateSourcesEmptyState();
 
                     // 渲染對話紀錄
                     if (data.messages && data.messages.length > 0) {
@@ -947,41 +1108,99 @@
         }
 
         // 刪除筆記本
-        async function deleteNotebook(id) {
-            if (!confirm("確定要刪除這個筆記本嗎？此操作無法還原。")) return;
+        async function deleteNotebook(notebook, triggerButton = null) {
+            const notebookId = typeof notebook === 'object' ? notebook.id : notebook;
+            const notebookName = typeof notebook === 'object' ? notebook.name : '這個筆記本';
+            if (!notebookId) return;
+            if (!confirm(`確定要刪除「${notebookName}」嗎？此操作會刪除來源、音檔與知識庫索引，且無法還原。`)) return;
+
+            setButtonBusy(triggerButton, true);
             try {
-                const res = await fetch(`/api/notebooks/${id}`, { method: 'DELETE' });
-                if (res.ok) fetchNotebooks();
+                const res = await fetch(`/api/notebooks/${notebookId}`, { method: 'DELETE' });
+                const data = await readSuccessfulApiResponse(res, '刪除筆記本失敗');
+                const deletedNotebook = data.notebook || {};
+                const deletedName = deletedNotebook.name || notebookName;
+
+                showToast({
+                    tone: 'success',
+                    title: '筆記本已刪除',
+                    message: `「${deletedName}」已從 VoiceRAG 移除。`,
+                    details: getNotebookDeleteDetails(data)
+                });
+
+                if (currentNotebookId === notebookId) {
+                    currentNotebookId = null;
+                    renderSuggestedQuestions([]);
+                    closeTranscriptModal();
+                    document.getElementById('workspace-view').classList.add('hidden');
+                    document.getElementById('dashboard-view').classList.remove('hidden');
+                }
+
+                const refreshed = await fetchNotebooks();
+                if (!refreshed) {
+                    showToast({
+                        tone: 'error',
+                        title: '列表刷新失敗',
+                        message: '筆記本已刪除，但首頁列表沒有重新載入成功。請稍後回到首頁再試一次。'
+                    });
+                }
             } catch (err) {
                 console.error("刪除失敗", err);
+                showToast({
+                    tone: 'error',
+                    title: '刪除筆記本失敗',
+                    message: err.message || '刪除筆記本時發生錯誤，請稍後再試。'
+                });
+            } finally {
+                setButtonBusy(triggerButton, false);
             }
         }
 
-        async function deleteSource(source) {
-            if (!currentNotebookId || !source || !source.id) return;
-            if (!confirm(`確定要刪除「${source.filename}」嗎？此操作會同步刪除音檔與知識庫索引，且無法還原。`)) return;
+        async function deleteSource(source, triggerButton = null) {
+            const notebookId = currentNotebookId;
+            if (!notebookId || !source || !source.id) return;
 
+            const sourceNameEl = document.querySelector(`[data-source-name="${source.id}"]`);
+            const displayFilename = sourceNameEl?.textContent || source.filename;
+            if (!confirm(`確定要刪除「${displayFilename}」嗎？此操作會同步刪除音檔與知識庫索引，且無法還原。`)) return;
+
+            setButtonBusy(triggerButton, true);
             stopSourceAudio(source.id);
             try {
-                const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${source.id}`, {
+                const res = await fetch(`/api/notebooks/${notebookId}/sources/${source.id}`, {
                     method: 'DELETE'
                 });
-                const data = await res.json();
-                if (!res.ok || data.status !== 'success') {
-                    throw new Error(data.detail || data.message || '刪除來源失敗');
+                const data = await readSuccessfulApiResponse(res, '刪除來源失敗');
+                const deletedSource = data.source || source;
+
+                if (currentNotebookId === notebookId) {
+                    const sourceEl = document.getElementById(`source-item-${source.id}`);
+                    if (sourceEl) {
+                        sourceEl.remove();
+                    }
+                    updateSourcesEmptyState();
+                    if (currentTranscriptSourceId === source.id) {
+                        closeTranscriptModal();
+                    }
+                    markDeletedSourceReferences(source.id);
+                    renderSuggestedQuestions([]);
                 }
 
-                const sourceEl = document.getElementById(`source-item-${source.id}`);
-                if (sourceEl) {
-                    sourceEl.remove();
-                }
-                if (currentTranscriptSourceId === source.id) {
-                    closeTranscriptModal();
-                }
-                renderSuggestedQuestions([]);
+                showToast({
+                    tone: 'success',
+                    title: '來源已刪除',
+                    message: `「${deletedSource.filename || displayFilename}」已從目前筆記本移除。`,
+                    details: getSourceDeleteDetails(data)
+                });
             } catch (err) {
                 console.error("刪除來源失敗", err);
-                alert(err.message || '刪除來源失敗');
+                showToast({
+                    tone: 'error',
+                    title: '刪除來源失敗',
+                    message: err.message || '刪除來源時發生錯誤，請稍後再試。'
+                });
+            } finally {
+                setButtonBusy(triggerButton, false);
             }
         }
 
@@ -1235,7 +1454,7 @@
         function createUploadTempSourceElement(id, fileName) {
             const item = document.createElement('div');
             item.id = id;
-            item.className = 'text-gray-400 p-2 rounded bg-[#222428] border border-[#333] transition animate-pulse space-y-2';
+            item.className = 'upload-source-temp text-gray-400 p-2 rounded bg-[#222428] border border-[#333] transition animate-pulse space-y-2';
 
             const row = document.createElement('div');
             row.className = 'flex items-center space-x-2 overflow-hidden text-base';
@@ -1507,6 +1726,7 @@
 
             // 在左側欄顯示載入狀態
             sourcesList.appendChild(createUploadTempSourceElement(tempSourceId, displayName));
+            updateSourcesEmptyState();
 
             // 在對話框顯示載入訊息
             createUploadProgressMessage(loadingMsgId, displayName);
@@ -1538,6 +1758,7 @@
                     if (tempSource) {
                         tempSource.replaceWith(createSourceElement(source));
                     }
+                    updateSourcesEmptyState();
 
                     // 顯示 AI 重點摘要
                     const formattedResult = `**《${source.filename}》重點摘要**\n\n${data.structured_knowledge}`;
@@ -1549,12 +1770,14 @@
                     failUploadProgress(uploadProgress, errorMessage);
                     const tempSource = document.getElementById(tempSourceId);
                     if (tempSource) tempSource.remove();
+                    updateSourcesEmptyState();
                     return data;
                 }
             } catch (error) {
                 failUploadProgress(uploadProgress, '網路連線異常，請檢查伺服器狀態。');
                 const tempSource = document.getElementById(tempSourceId);
                 if (tempSource) tempSource.remove();
+                updateSourcesEmptyState();
                 return null;
             }
         }
