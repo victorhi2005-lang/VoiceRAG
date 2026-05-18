@@ -44,6 +44,10 @@ def init_db():
         "timed_segments": "ALTER TABLE sources ADD COLUMN timed_segments TEXT",
         "transcript_updated_at": "ALTER TABLE sources ADD COLUMN transcript_updated_at TEXT",
         "indexed_at": "ALTER TABLE sources ADD COLUMN indexed_at TEXT",
+        "analysis_mode": "ALTER TABLE sources ADD COLUMN analysis_mode TEXT",
+        "analysis_status": "ALTER TABLE sources ADD COLUMN analysis_status TEXT",
+        "analysis_json": "ALTER TABLE sources ADD COLUMN analysis_json TEXT",
+        "analysis_updated_at": "ALTER TABLE sources ADD COLUMN analysis_updated_at TEXT",
     }
     for column_name, migration_sql in source_migrations.items():
         if column_name not in source_columns:
@@ -144,6 +148,9 @@ def get_notebook_details_data(notebook_id):
             added_at,
             transcript_updated_at,
             indexed_at,
+            analysis_mode,
+            analysis_status,
+            analysis_updated_at,
             CASE WHEN TRIM(COALESCE(transcript_text, '')) != '' THEN 1 ELSE 0 END
         FROM sources
         WHERE notebook_id = ?
@@ -158,7 +165,10 @@ def get_notebook_details_data(notebook_id):
             "added_at": r[2],
             "transcript_updated_at": r[3],
             "indexed_at": r[4],
-            "has_transcript": bool(r[5])
+            "analysis_mode": r[5],
+            "analysis_status": r[6],
+            "analysis_updated_at": r[7],
+            "has_transcript": bool(r[8])
         }
         for r in cursor.fetchall()
     ]
@@ -224,7 +234,15 @@ def get_source_transcript_data(notebook_id, source_id):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, filename, transcript_text, transcript_updated_at, indexed_at
+        SELECT
+            id,
+            filename,
+            transcript_text,
+            transcript_updated_at,
+            indexed_at,
+            analysis_mode,
+            analysis_status,
+            analysis_updated_at
         FROM sources
         WHERE id = ? AND notebook_id = ?
         """,
@@ -243,11 +261,30 @@ def get_source_transcript_data(notebook_id, source_id):
         "transcript_text": transcript_text,
         "has_transcript": bool(transcript_text.strip()),
         "transcript_updated_at": row[3],
-        "indexed_at": row[4]
+        "indexed_at": row[4],
+        "analysis_mode": row[5],
+        "analysis_status": row[6],
+        "analysis_updated_at": row[7]
     }
 
 
 def get_source_update_info(notebook_id, source_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT filename, transcript_text, timed_segments
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def get_source_analysis_input(notebook_id, source_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -380,17 +417,69 @@ def update_source_filename_record(notebook_id, source_id, filename):
     return {"old_filename": old_filename, "filename": filename, "updated_at": now}
 
 
-def update_source_transcript_record(notebook_id, source_id, transcript_text):
+def update_source_transcript_record(
+    notebook_id,
+    source_id,
+    transcript_text,
+    analysis_mode=None,
+    analysis_status=None,
+    analysis_json=None,
+):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cursor = conn.cursor()
+    if analysis_mode is None and analysis_status is None and analysis_json is None:
+        cursor.execute(
+            """
+            UPDATE sources
+            SET transcript_text = ?, transcript_updated_at = ?, indexed_at = ?
+            WHERE id = ? AND notebook_id = ?
+            """,
+            (transcript_text, now, now, source_id, notebook_id)
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE sources
+            SET
+                transcript_text = ?,
+                transcript_updated_at = ?,
+                indexed_at = ?,
+                analysis_mode = ?,
+                analysis_status = ?,
+                analysis_json = ?,
+                analysis_updated_at = ?
+            WHERE id = ? AND notebook_id = ?
+            """,
+            (
+                transcript_text,
+                now,
+                now,
+                analysis_mode,
+                analysis_status,
+                analysis_json,
+                now,
+                source_id,
+                notebook_id
+            )
+        )
+    cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
+    conn.commit()
+    conn.close()
+    return now
+
+
+def update_source_analysis_record(notebook_id, source_id, analysis_mode, analysis_status, analysis_json):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         UPDATE sources
-        SET transcript_text = ?, transcript_updated_at = ?, indexed_at = ?
+        SET analysis_mode = ?, analysis_status = ?, analysis_json = ?, analysis_updated_at = ?
         WHERE id = ? AND notebook_id = ?
         """,
-        (transcript_text, now, now, source_id, notebook_id)
+        (analysis_mode, analysis_status, analysis_json, now, source_id, notebook_id)
     )
     cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
     conn.commit()
@@ -465,17 +554,52 @@ def get_data_consistency_snapshot():
     return {"notebooks": notebooks, "sources": sources}
 
 
-def insert_source_record(notebook_id, source_id, filename, transcript_text, timed_segments_json):
+def insert_source_record(
+    notebook_id,
+    source_id,
+    filename,
+    transcript_text,
+    timed_segments_json,
+    analysis_mode=None,
+    analysis_status=None,
+    analysis_json=None,
+):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO sources
-            (id, notebook_id, filename, added_at, transcript_text, timed_segments, transcript_updated_at, indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (
+                id,
+                notebook_id,
+                filename,
+                added_at,
+                transcript_text,
+                timed_segments,
+                transcript_updated_at,
+                indexed_at,
+                analysis_mode,
+                analysis_status,
+                analysis_json,
+                analysis_updated_at
+            )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (source_id, notebook_id, filename, now, transcript_text, timed_segments_json, now, now)
+        (
+            source_id,
+            notebook_id,
+            filename,
+            now,
+            transcript_text,
+            timed_segments_json,
+            now,
+            now,
+            analysis_mode,
+            analysis_status,
+            analysis_json,
+            now if analysis_status else None
+        )
     )
     cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
     conn.commit()

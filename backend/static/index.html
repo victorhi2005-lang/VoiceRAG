@@ -785,6 +785,22 @@
             });
         }
 
+        function getAnalysisBadge(source) {
+            if (!source.has_transcript) return null;
+            const mode = source.analysis_mode || '';
+            const status = source.analysis_status || '';
+            if (status === 'completed' && mode === 'deep') {
+                return { text: '深度分析完成', className: 'text-emerald-300 border-emerald-500/40' };
+            }
+            if (status === 'completed') {
+                return { text: '快速摘要', className: 'text-blue-300 border-blue-500/40' };
+            }
+            if (status === 'failed') {
+                return { text: '分析失敗，可重新分析', className: 'text-red-300 border-red-500/40' };
+            }
+            return { text: '可重新分析', className: 'text-amber-300 border-amber-500/40' };
+        }
+
         function createSourceElement(source) {
             const item = document.createElement('div');
             item.id = `source-item-${source.id}`;
@@ -826,6 +842,17 @@
                 badge.textContent = '無逐字稿';
                 openButton.appendChild(badge);
             }
+
+            const reanalyzeButton = document.createElement('button');
+            reanalyzeButton.type = 'button';
+            reanalyzeButton.className = 'w-8 h-8 rounded-md flex items-center justify-center text-gray-500 hover:bg-blue-500/10 hover:text-blue-300 shrink-0 transition disabled:opacity-40 disabled:cursor-not-allowed';
+            reanalyzeButton.title = '重新深度分析';
+            reanalyzeButton.disabled = !source.has_transcript;
+            reanalyzeButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></svg>';
+            reanalyzeButton.onclick = (event) => {
+                event.stopPropagation();
+                reanalyzeSource(source, reanalyzeButton);
+            };
 
             const renameButton = document.createElement('button');
             renameButton.type = 'button';
@@ -876,9 +903,22 @@
 
             row.appendChild(playButton);
             row.appendChild(openButton);
+            row.appendChild(reanalyzeButton);
             row.appendChild(renameButton);
             row.appendChild(deleteButton);
             item.appendChild(row);
+
+            const analysisBadge = getAnalysisBadge(source);
+            if (analysisBadge) {
+                const statusRow = document.createElement('div');
+                statusRow.className = 'pl-9 pr-10';
+                const badge = document.createElement('span');
+                badge.className = `inline-flex max-w-full rounded border px-2 py-0.5 text-xs ${analysisBadge.className}`;
+                badge.textContent = analysisBadge.text;
+                statusRow.appendChild(badge);
+                item.appendChild(statusRow);
+            }
+
             item.appendChild(progressPanel);
             return item;
         }
@@ -1204,6 +1244,53 @@
             }
         }
 
+        async function reanalyzeSource(source, triggerButton = null) {
+            const notebookId = currentNotebookId;
+            if (!notebookId || !source || !source.id || !source.has_transcript) return;
+
+            const displayFilename = document.querySelector(`[data-source-name="${source.id}"]`)?.textContent || source.filename;
+            if (!confirm(`要重新分析「${displayFilename}」嗎？長音檔可能需要等待較久，但會更新摘要、推薦問題與可檢索的摘要索引。`)) return;
+
+            setButtonBusy(triggerButton, true);
+            showToast({
+                tone: 'info',
+                title: '開始重新分析',
+                message: '系統會用已保存的逐字稿重新產生長音檔摘要。'
+            });
+
+            try {
+                const res = await fetch(`/api/notebooks/${notebookId}/sources/${source.id}/reanalyze`, {
+                    method: 'POST'
+                });
+                const data = await readSuccessfulApiResponse(res, '重新分析失敗');
+                const updatedSource = { ...source, ...(data.source || {}) };
+                const sourceEl = document.getElementById(`source-item-${source.id}`);
+                if (sourceEl) {
+                    sourceEl.replaceWith(createSourceElement(updatedSource));
+                }
+
+                if (data.structured_knowledge) {
+                    appendMessage('AI', `**《${updatedSource.filename || displayFilename}》重點摘要**\n\n${data.structured_knowledge}`);
+                }
+                renderSuggestedQuestions(data.suggested_questions || []);
+
+                showToast({
+                    tone: 'success',
+                    title: '重新分析完成',
+                    message: data.message || '摘要與索引已更新。'
+                });
+            } catch (err) {
+                console.error("重新分析失敗", err);
+                showToast({
+                    tone: 'error',
+                    title: '重新分析失敗',
+                    message: err.message || '重新分析時發生錯誤，請稍後再試。'
+                });
+            } finally {
+                setButtonBusy(triggerButton, false);
+            }
+        }
+
         // 修改名稱 Modal 邏輯
         function openRenameModal(id, currentName, mode = 'notebook') {
             renameTargetId = id;
@@ -1359,6 +1446,15 @@
                     statusEl.textContent = data.message || '逐字稿已更新並重新索引完成。';
                     if (data.changed !== false) {
                         currentTranscriptOriginalText = transcriptText;
+                        if (data.source) {
+                            const sourceEl = document.getElementById(`source-item-${currentTranscriptSourceId}`);
+                            if (sourceEl) {
+                                sourceEl.replaceWith(createSourceElement(data.source));
+                            }
+                        }
+                        if (data.suggested_questions) {
+                            renderSuggestedQuestions(data.suggested_questions || []);
+                        }
                     }
                 } else {
                     statusEl.textContent = data.message || '更新逐字稿失敗。';
@@ -1446,8 +1542,8 @@
             { title: '重新命名中', detail: 'AI 正在根據逐字稿產生音檔名稱。', percent: 36 },
             { title: '文字切分中', detail: '正在整理逐字稿並切成知識片段。', percent: 50 },
             { title: '向量化中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 68 },
-            { title: 'AI 摘要中', detail: 'Ollama 正在產生重點摘要。', percent: 84 },
-            { title: '正在產生問題', detail: 'AI 正在根據內容產生可追問的問題。', percent: 94 },
+            { title: 'AI 摘要中', detail: 'Ollama 正在進行摘要；長音檔會分段深度分析。', percent: 84 },
+            { title: '正在產生問題', detail: 'AI 正在整理推薦問題與摘要索引。', percent: 94 },
             { title: '完成', detail: '音檔已處理完成。', percent: 100 }
         ];
 

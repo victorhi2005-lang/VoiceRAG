@@ -42,6 +42,7 @@ from audio_service import (
     delete_source_data,
     get_audio_file_path,
     process_audio_upload,
+    reanalyze_source_data,
     rename_source_filename,
 )
 from rag_service import (
@@ -124,6 +125,16 @@ async def update_source_filename(notebook_id: str, source_id: str, request: Sour
     result = rename_source_filename(notebook_id, source_id, request.filename)
     if result.get("status") != "success":
         raise HTTPException(status_code=404, detail=result.get("message", "找不到指定來源"))
+    return result
+
+
+@app.post("/api/notebooks/{notebook_id}/sources/{source_id}/reanalyze")
+async def reanalyze_source(notebook_id: str, source_id: str):
+    result = reanalyze_source_data(notebook_id, source_id)
+    if result.get("status") != "success":
+        message = result.get("message", "重新分析失敗")
+        status_code = 404 if "找不到" in message else 500
+        raise HTTPException(status_code=status_code, detail=message)
     return result
 
 

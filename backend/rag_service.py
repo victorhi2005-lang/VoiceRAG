@@ -13,7 +13,13 @@ import ollama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Okapi
 
-from db import append_qa_messages, get_recent_messages, get_source_update_info, update_source_transcript_record
+from db import (
+    append_qa_messages,
+    get_recent_messages,
+    get_source_update_info,
+    save_suggested_questions,
+    update_source_transcript_record,
+)
 from models import embeddings_model, reranker
 
 
@@ -41,6 +47,20 @@ NO_ANSWER_PHRASES = (
     "目前資料庫的錄音紀錄並未提及",
     "資料庫的錄音紀錄並未提及",
     "並未提及此資訊",
+)
+
+ANALYSIS_VERSION = "1.0"
+LONG_AUDIO_SECONDS = 10 * 60
+LONG_TRANSCRIPT_CHARS = 5000
+CHAPTER_TARGET_SECONDS = 4 * 60
+CHAPTER_MIN_SECONDS = 3 * 60
+CHAPTER_MAX_SECONDS = 5 * 60
+SUMMARY_DOC_TYPES = {"global_summary", "chapter_summary"}
+TRANSCRIPT_DOC_TYPE = "transcript_chunk"
+GLOBAL_QUESTION_KEYWORDS = (
+    "摘要", "總結", "重點", "大意", "主題", "核心", "整體", "全篇", "全段", "這份",
+    "這段", "錄音主要", "內容主要", "深度解析", "解析", "介紹", "潤色", "改寫",
+    "心得", "架構", "脈絡", "整理", "統整", "說明這個", "說明一下",
 )
 
 
@@ -88,6 +108,305 @@ def is_no_answer_response(answer: str) -> bool:
     """判斷整段回答是否屬於「資料庫沒有答案」，避免顯示硬湊的來源。"""
     compact_answer = re.sub(r"\s+", "", answer or "")
     return any(phrase in compact_answer for phrase in NO_ANSWER_PHRASES)
+
+
+def normalize_text_list(value: Any, limit: int | None = None) -> list[str]:
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    elif isinstance(value, str):
+        items = [
+            re.sub(r"^\s*[-*•\d.、)）]+\s*", "", line).strip()
+            for line in value.splitlines()
+        ]
+    else:
+        items = []
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        cleaned.append(item)
+        if limit is not None and len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def extract_json_object(raw_text: str) -> dict[str, Any]:
+    cleaned = (raw_text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = re.sub(r"^(json|JSON)\s*", "", cleaned).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if not match:
+        return {}
+
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_transcript_duration(timed_segments: list[dict[str, Any]]) -> float:
+    duration = 0.0
+    for segment in timed_segments or []:
+        try:
+            duration = max(duration, float(segment.get("end", 0) or 0))
+        except Exception:
+            continue
+    return duration
+
+
+def should_use_deep_analysis(transcript_text: str, timed_segments: list[dict[str, Any]]) -> bool:
+    return (
+        get_transcript_duration(timed_segments) >= LONG_AUDIO_SECONDS
+        or len((transcript_text or "").strip()) >= LONG_TRANSCRIPT_CHARS
+    )
+
+
+def build_chapter_inputs(transcript_text: str, timed_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if timed_segments:
+        chapters: list[dict[str, Any]] = []
+        current_segments: list[dict[str, Any]] = []
+        current_start: float | None = None
+
+        for segment in timed_segments:
+            text = str(segment.get("text", "")).strip()
+            if not text:
+                continue
+            try:
+                start = float(segment.get("start", 0) or 0)
+                end = float(segment.get("end", start) or start)
+            except Exception:
+                start = 0.0
+                end = start
+
+            if current_start is None:
+                current_start = start
+
+            current_segments.append({"text": text, "start": start, "end": end})
+            current_duration = end - current_start
+            if current_duration >= CHAPTER_TARGET_SECONDS or current_duration >= CHAPTER_MAX_SECONDS:
+                if current_duration >= CHAPTER_MIN_SECONDS:
+                    chapter_text = "".join(item["text"] for item in current_segments).strip()
+                    chapters.append({
+                        "index": len(chapters) + 1,
+                        "start_time": current_start,
+                        "end_time": end,
+                        "time_range": get_time_range_text(current_start, end),
+                        "text": chapter_text
+                    })
+                    current_segments = []
+                    current_start = None
+
+        if current_segments:
+            start = current_start if current_start is not None else float(current_segments[0]["start"])
+            end = float(current_segments[-1]["end"])
+            chapter_text = "".join(item["text"] for item in current_segments).strip()
+            if chapter_text:
+                if chapters and end - start < 90:
+                    previous = chapters[-1]
+                    previous["text"] = f"{previous['text']}{chapter_text}"
+                    previous["end_time"] = end
+                    previous["time_range"] = get_time_range_text(previous["start_time"], end)
+                else:
+                    chapters.append({
+                        "index": len(chapters) + 1,
+                        "start_time": start,
+                        "end_time": end,
+                        "time_range": get_time_range_text(start, end),
+                        "text": chapter_text
+                    })
+        if chapters:
+            return chapters
+
+    chunks = semantic_chunk(transcript_text, similarity_threshold=0.62, max_chunk_size=3500, min_chunk_size=600)
+    return [
+        {
+            "index": index,
+            "start_time": -1.0,
+            "end_time": -1.0,
+            "time_range": "時間未記錄",
+            "text": chunk
+        }
+        for index, chunk in enumerate(chunks, start=1)
+    ]
+
+
+def generate_short_summary(transcript_text: str) -> str:
+    prompt = f"""
+你是一個專業的 AI 知識分析助手。請閱讀以下的口述語音逐字稿，
+進行深入的訊息分析，並給出一份精煉的「整體重點摘要」。
+
+輸出格式請嚴格遵守：
+【整體重點摘要】
+
+接著只寫一段流暢的摘要文字，幫助讀者快速掌握整段語音的精華。
+
+規則：
+1. 請務必使用繁體中文。
+2. 不要使用編號清單。
+3. 不要使用項目符號。
+4. 不要輸出「核心主題」、「深度解析」、「重要細節」、「分段重點」等額外區塊。
+5. 不要輸出 Markdown 標題。
+
+語音逐字稿內容：
+{transcript_text}
+"""
+    response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+    return response["message"]["content"]
+
+
+def analyze_chapter_with_llm(chapter: dict[str, Any]) -> dict[str, Any]:
+    prompt = f"""
+你是一個專業的長音檔知識整理助手。請分析下方這一段逐字稿，並只輸出 JSON 物件。
+
+JSON 欄位固定如下：
+{{
+  "title": "本段標題，12 字以內",
+  "summary": "本段摘要，使用繁體中文，2 到 4 句",
+  "key_points": ["重點一", "重點二", "重點三"],
+  "keywords": ["關鍵詞一", "關鍵詞二"],
+  "questions": ["可延伸問題一？"]
+}}
+
+規則：
+1. 必須使用繁體中文。
+2. 不要輸出 Markdown，不要輸出 JSON 以外的文字。
+3. 只根據逐字稿內容整理，不要自行補充外部知識。
+
+段落時間：{chapter["time_range"]}
+逐字稿：
+{chapter["text"]}
+"""
+    response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+    parsed = extract_json_object(response["message"]["content"])
+    title = str(parsed.get("title") or f"第 {chapter['index']} 段重點").strip()
+    summary = str(parsed.get("summary") or response["message"]["content"]).strip()
+    return {
+        "index": chapter["index"],
+        "title": title[:40],
+        "time_range": chapter["time_range"],
+        "start_time": float(chapter.get("start_time", -1.0)),
+        "end_time": float(chapter.get("end_time", -1.0)),
+        "summary": summary,
+        "key_points": normalize_text_list(parsed.get("key_points"), limit=5),
+        "keywords": normalize_text_list(parsed.get("keywords"), limit=8),
+        "questions": normalize_text_list(parsed.get("questions"), limit=3),
+    }
+
+
+def generate_global_analysis(chapters: list[dict[str, Any]]) -> dict[str, Any]:
+    chapter_payload = [
+        {
+            "index": chapter["index"],
+            "title": chapter["title"],
+            "time_range": chapter["time_range"],
+            "summary": chapter["summary"],
+            "key_points": chapter["key_points"],
+            "keywords": chapter["keywords"],
+        }
+        for chapter in chapters
+    ]
+    prompt = f"""
+你是一個 NotebookLM 風格的知識摘要助手。請根據多個段落分析結果，產生整份錄音的全局理解，並只輸出 JSON 物件。
+
+JSON 欄位固定如下：
+{{
+  "overall_title": "整份錄音標題",
+  "overview": "整體摘要，3 到 5 句",
+  "core_themes": ["核心主題一", "核心主題二", "核心主題三"],
+  "deep_insights": ["深度解析一", "深度解析二", "深度解析三"],
+  "important_details": ["重要細節一", "重要細節二"],
+  "suggested_questions": ["推薦問題一？", "推薦問題二？", "推薦問題三？"]
+}}
+
+規則：
+1. 必須使用繁體中文。
+2. 不要輸出 Markdown，不要輸出 JSON 以外的文字。
+3. 摘要要重視全局脈絡，不要只挑其中一段。
+4. 推薦問題最多 3 題，且要能幫助使用者理解整份內容。
+
+段落分析結果：
+{json.dumps(chapter_payload, ensure_ascii=False)}
+"""
+    response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+    parsed = extract_json_object(response["message"]["content"])
+    return {
+        "overall_title": str(parsed.get("overall_title") or "錄音重點摘要").strip(),
+        "overview": str(parsed.get("overview") or response["message"]["content"]).strip(),
+        "core_themes": normalize_text_list(parsed.get("core_themes"), limit=5),
+        "deep_insights": normalize_text_list(parsed.get("deep_insights"), limit=5),
+        "important_details": normalize_text_list(parsed.get("important_details"), limit=6),
+        "suggested_questions": normalize_text_list(parsed.get("suggested_questions"), limit=3),
+    }
+
+
+def format_analysis_summary(analysis: dict[str, Any]) -> str:
+    global_summary = cast(dict[str, Any], analysis.get("global_summary") or {})
+    overview = str(global_summary.get("overview") or "").strip()
+    if overview:
+        return overview
+
+    return str(global_summary.get("overall_title") or "目前無法產生整體摘要。").strip()
+
+
+def build_source_analysis(filename: str, transcript_text: str, timed_segments: list[dict[str, Any]]) -> dict[str, Any]:
+    mode = "deep" if should_use_deep_analysis(transcript_text, timed_segments) else "quick"
+    duration_seconds = get_transcript_duration(timed_segments)
+
+    if mode == "quick":
+        summary = generate_short_summary(transcript_text)
+        suggested_questions = generate_suggested_questions(transcript_text)
+        analysis = {
+            "version": ANALYSIS_VERSION,
+            "mode": "quick",
+            "filename": filename,
+            "duration_seconds": duration_seconds,
+            "chapters": [],
+            "global_summary": {
+                "overall_title": "重點摘要",
+                "overview": summary,
+                "core_themes": [],
+                "deep_insights": [],
+                "important_details": [],
+                "suggested_questions": suggested_questions,
+            },
+            "suggested_questions": suggested_questions,
+        }
+        analysis["structured_knowledge"] = format_analysis_summary(analysis)
+        return analysis
+
+    chapter_inputs = build_chapter_inputs(transcript_text, timed_segments)
+    chapters = [analyze_chapter_with_llm(chapter) for chapter in chapter_inputs]
+    global_summary = generate_global_analysis(chapters)
+    suggested_questions = normalize_text_list(global_summary.get("suggested_questions"), limit=3)
+    if not suggested_questions:
+        suggested_questions = normalize_text_list(
+            [question for chapter in chapters for question in chapter.get("questions", [])],
+            limit=3
+        )
+
+    analysis = {
+        "version": ANALYSIS_VERSION,
+        "mode": "deep",
+        "filename": filename,
+        "duration_seconds": duration_seconds,
+        "chapters": chapters,
+        "global_summary": global_summary,
+        "suggested_questions": suggested_questions,
+    }
+    analysis["structured_knowledge"] = format_analysis_summary(analysis)
+    return analysis
 
 
 def rebuild_bm25_index(notebook_id: str) -> None:
@@ -387,7 +706,9 @@ def build_reference_candidate(question: str, doc: str, metadata: Metadata, reran
             "label": label,
             "source_id": str(metadata.get("source_id", "")) if metadata else "",
             "source": metadata.get("source", "未知來源") if metadata else "未知來源",
+            "doc_type": metadata.get("doc_type", TRANSCRIPT_DOC_TYPE) if metadata else TRANSCRIPT_DOC_TYPE,
             "chunk_index": metadata.get("chunk_index", -1) if metadata else -1,
+            "time_range": metadata.get("time_range", "時間未記錄") if metadata else "時間未記錄",
             "char_start": evidence["char_start"],
             "char_end": evidence["char_end"],
             "excerpt": evidence["excerpt"]
@@ -588,6 +909,7 @@ def build_chunk_metadata(chunks, timed_segments, source_filename, source_id=None
         metadata_list.append({
             "source": source_filename,
             "source_id": source_id or "",
+            "doc_type": TRANSCRIPT_DOC_TYPE,
             "chunk_index": i,
             "char_start": found_at,
             "char_end": chunk_end,
@@ -669,6 +991,26 @@ def delete_source_from_index(notebook_id, source_id):
     return deleted_count
 
 
+def delete_source_analysis_chunks(collection, source_id: str) -> int:
+    try:
+        existing = cast(dict[str, Any], collection.get(
+            where={"source_id": source_id},
+            include=["metadatas"]
+        ))
+        ids = cast(list[str], existing.get("ids") or [])
+        metadatas = cast(list[Metadata], existing.get("metadatas") or [])
+        ids_to_delete = [
+            doc_id
+            for doc_id, metadata in zip(ids, metadatas)
+            if metadata and metadata.get("doc_type") in SUMMARY_DOC_TYPES
+        ]
+        if ids_to_delete:
+            collection.delete(ids=ids_to_delete)
+        return len(ids_to_delete)
+    except Exception:
+        return 0
+
+
 def get_chroma_collection_names():
     names: list[str] = []
     try:
@@ -720,6 +1062,101 @@ def get_chroma_consistency_snapshot():
         "source_chunks_by_notebook": source_chunks_by_notebook,
         "errors": errors
     }
+
+
+def build_global_summary_document(analysis: dict[str, Any]) -> str:
+    global_summary = cast(dict[str, Any], analysis.get("global_summary") or {})
+    parts = [
+        f"全局摘要標題：{global_summary.get('overall_title', '')}",
+        f"整體摘要：{global_summary.get('overview', '')}",
+    ]
+    for label, key in (
+        ("核心主題", "core_themes"),
+        ("深度解析", "deep_insights"),
+        ("重要細節", "important_details"),
+    ):
+        items = normalize_text_list(global_summary.get(key))
+        if items:
+            parts.append(f"{label}：{'；'.join(items)}")
+    return "\n".join(part for part in parts if part.strip())
+
+
+def build_chapter_summary_document(chapter: dict[str, Any]) -> str:
+    parts = [
+        f"章節：{chapter.get('title', '')}",
+        f"時間：{chapter.get('time_range', '時間未記錄')}",
+        f"摘要：{chapter.get('summary', '')}",
+    ]
+    key_points = normalize_text_list(chapter.get("key_points"))
+    keywords = normalize_text_list(chapter.get("keywords"))
+    if key_points:
+        parts.append(f"重點：{'；'.join(key_points)}")
+    if keywords:
+        parts.append(f"關鍵詞：{'、'.join(keywords)}")
+    return "\n".join(part for part in parts if part.strip())
+
+
+def index_source_analysis_documents(notebook_id, source_id, filename, analysis):
+    collection = get_notebook_collection(notebook_id)
+    delete_source_analysis_chunks(collection, source_id)
+
+    documents: list[str] = []
+    metadatas: list[Metadata] = []
+    ids: list[str] = []
+    global_doc = build_global_summary_document(analysis)
+    if global_doc.strip():
+        documents.append(global_doc)
+        ids.append(f"{source_id}_global_summary_{uuid.uuid4().hex[:6]}")
+        metadatas.append({
+            "source": filename,
+            "source_id": source_id,
+            "doc_type": "global_summary",
+            "chunk_index": -1,
+            "chapter_index": -1,
+            "char_start": -1,
+            "char_end": -1,
+            "start_time": -1.0,
+            "end_time": -1.0,
+            "time_range": "全段錄音",
+            "analysis_version": str(analysis.get("version", ANALYSIS_VERSION))
+        })
+
+    for chapter in cast(list[dict[str, Any]], analysis.get("chapters") or []):
+        chapter_doc = build_chapter_summary_document(chapter)
+        if not chapter_doc.strip():
+            continue
+        chapter_index = int(chapter.get("index", len(documents)))
+        documents.append(chapter_doc)
+        ids.append(f"{source_id}_chapter_{chapter_index}_{uuid.uuid4().hex[:6]}")
+        metadatas.append({
+            "source": filename,
+            "source_id": source_id,
+            "doc_type": "chapter_summary",
+            "chunk_index": chapter_index,
+            "chapter_index": chapter_index,
+            "char_start": -1,
+            "char_end": -1,
+            "start_time": float(chapter.get("start_time", -1.0)),
+            "end_time": float(chapter.get("end_time", -1.0)),
+            "time_range": chapter.get("time_range", "時間未記錄"),
+            "analysis_version": str(analysis.get("version", ANALYSIS_VERSION))
+        })
+
+    if not documents:
+        rebuild_bm25_index(notebook_id)
+        return 0
+
+    vectors = [embeddings_model.encode(document).tolist() for document in documents]
+    for doc_id, vector, document, metadata in zip(ids, vectors, documents, metadatas):
+        collection.add(
+            ids=[doc_id],
+            embeddings=[vector],
+            documents=[document],
+            metadatas=[metadata]
+        )
+
+    rebuild_bm25_index(notebook_id)
+    return len(documents)
 
 
 def index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments):
@@ -879,6 +1316,61 @@ def generate_suggested_questions(transcript_text):
         return []
 
 
+def is_global_question(question: str) -> bool:
+    compact = re.sub(r"\s+", "", question or "")
+    return any(keyword in compact for keyword in GLOBAL_QUESTION_KEYWORDS)
+
+
+def get_summary_candidates(collection, limit: int = 24) -> tuple[list[str], dict[str, Metadata]]:
+    try:
+        existing = cast(dict[str, Any], collection.get(include=["documents", "metadatas"]))
+    except Exception:
+        return [], {}
+
+    docs = cast(list[str], existing.get("documents") or [])
+    metadatas = cast(list[Metadata], existing.get("metadatas") or [])
+    pairs: list[tuple[int, str, Metadata]] = []
+    for doc, metadata in zip(docs, metadatas):
+        doc_type = (metadata or {}).get("doc_type")
+        if doc_type not in SUMMARY_DOC_TYPES:
+            continue
+        priority = 0 if doc_type == "global_summary" else 1
+        pairs.append((priority, doc, metadata or {}))
+
+    pairs.sort(key=lambda item: (
+        item[0],
+        str(item[2].get("source", "")),
+        int(item[2].get("chapter_index", item[2].get("chunk_index", 999999)) or 999999)
+    ))
+    selected = pairs[:limit]
+    docs_out = [doc for _, doc, _ in selected]
+    metadata_map = {doc: metadata for _, doc, metadata in selected}
+    return docs_out, metadata_map
+
+
+def merge_ranked_candidates(primary_docs: list[str], secondary_docs: list[str], limit: int) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for doc in primary_docs + secondary_docs:
+        if not doc or doc in seen:
+            continue
+        seen.add(doc)
+        merged.append(doc)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def get_context_block_label(metadata: Metadata, index: int) -> str:
+    doc_type = metadata.get("doc_type") if metadata else ""
+    if doc_type == "global_summary":
+        return f"全局摘要 {index}"
+    if doc_type == "chapter_summary":
+        time_range = metadata.get("time_range", "時間未記錄")
+        return f"章節摘要 {index}（{time_range}）"
+    return f"原文片段 {index}"
+
+
 class SourceNotFoundError(Exception):
     pass
 
@@ -911,23 +1403,47 @@ def update_source_transcript(notebook_id, source_id, transcript_text):
 
     try:
         timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
+        analysis = build_source_analysis(filename, transcript_text, timed_segments)
         chunk_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments)
+        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis)
     except Exception as e:
         return {"status": "error", "message": f"重新索引失敗: {str(e)}"}
 
-    now = update_source_transcript_record(notebook_id, source_id, transcript_text)
+    analysis_json = json.dumps(
+        {key: value for key, value in analysis.items() if key != "structured_knowledge"},
+        ensure_ascii=False
+    )
+    now = update_source_transcript_record(
+        notebook_id,
+        source_id,
+        transcript_text,
+        analysis.get("mode"),
+        "completed",
+        analysis_json
+    )
+    try:
+        save_suggested_questions(notebook_id, filename, analysis.get("suggested_questions", []))
+    except Exception:
+        pass
+
     return {
         "status": "success",
         "changed": True,
-        "message": f"逐字稿已更新，並重新建立 {chunk_count} 個知識片段。",
+        "message": f"逐字稿已更新，並重新建立 {chunk_count} 個原文片段與 {analysis_chunk_count} 個摘要片段。",
         "source": {
             "id": source_id,
             "filename": filename,
             "has_transcript": True,
             "transcript_updated_at": now,
-            "indexed_at": now
+            "indexed_at": now,
+            "analysis_mode": analysis.get("mode"),
+            "analysis_status": "completed",
+            "analysis_updated_at": now
         },
-        "chunk_count": chunk_count
+        "chunk_count": chunk_count,
+        "analysis_chunk_count": analysis_chunk_count,
+        "structured_knowledge": analysis.get("structured_knowledge", ""),
+        "suggested_questions": analysis.get("suggested_questions", [])
     }
 
 
@@ -940,7 +1456,8 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
             return {"status": "error", "message": "此筆記本尚未上傳任何來源，請先上傳音檔。"}
 
         total_docs = collection.count()
-        n_candidates = min(20, total_docs)
+        n_candidates = min(40, total_docs)
+        global_question = is_global_question(question)
 
         dense_results = cast(dict[str, Any], collection.query(
             query_embeddings=[query_vector],
@@ -973,13 +1490,21 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         else:
             fused_candidates = dense_docs
 
-        fused_candidates = fused_candidates[:20]
+        summary_docs, summary_metadata_map = get_summary_candidates(collection)
+        doc_metadata_map.update(summary_metadata_map)
+        if global_question and summary_docs:
+            fused_candidates = merge_ranked_candidates(summary_docs, fused_candidates, limit=60)
+        else:
+            fused_candidates = merge_ranked_candidates(fused_candidates, summary_docs[:6], limit=50)
 
         pairs: list[tuple[str, str]] = [(question, doc) for doc in fused_candidates]
+        if not pairs:
+            return {"status": "error", "message": "目前知識庫沒有可用的文字片段，請重新上傳或重新分析來源。"}
+
         raw_scores = reranker.predict(cast(Any, pairs))
         scores = normalize_reranker_scores(raw_scores)
 
-        ranked = sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True)[:5]
+        ranked = sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True)[:8]
         top_documents = [doc for _, doc in ranked]
         reference_candidates: list[dict[str, Any]] = []
         context_blocks: list[str] = []
@@ -987,10 +1512,12 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         for index, (reranker_score, doc) in enumerate(ranked, start=1):
             metadata = doc_metadata_map.get(doc, {})
             label = get_reference_label(metadata)
-            context_blocks.append(f"[資料片段 {index}]\n{doc}")
+            context_label = get_context_block_label(metadata, index)
+            context_blocks.append(f"[{context_label}｜來源：{label}]\n{doc}")
             source_id = str(metadata.get("source_id", "")) if metadata else ""
             chunk_index = metadata.get("chunk_index", -1) if metadata else -1
-            reference_key = f"{source_id or label}:{chunk_index}"
+            doc_type = metadata.get("doc_type", TRANSCRIPT_DOC_TYPE) if metadata else TRANSCRIPT_DOC_TYPE
+            reference_key = f"{source_id or label}:{doc_type}:{chunk_index}"
             if reference_key not in seen_reference_keys:
                 seen_reference_keys.add(reference_key)
                 reference_candidates.append(build_reference_candidate(question, doc, metadata, reranker_score))
@@ -1018,7 +1545,8 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
 4. 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
 5. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
 6. 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
-7. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。"""
+7. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。
+8. 若參考資料同時包含「全局摘要」、「章節摘要」與「原文片段」，回答整體主題、摘要、潤色或深度解析問題時，請優先使用全局摘要與章節摘要，再用原文片段補細節。"""
 
         if history_text:
             rag_prompt += f"\n\n【歷史對話】：\n{history_text}"

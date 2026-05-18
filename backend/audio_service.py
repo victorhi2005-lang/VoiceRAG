@@ -14,21 +14,24 @@ from db import (
     delete_source_record,
     get_data_consistency_snapshot,
     get_notebook_delete_info,
+    get_source_analysis_input,
     get_source_audio_info,
     get_source_delete_info,
     get_source_filenames,
     insert_ai_summary_message,
     insert_source_record,
     save_suggested_questions,
+    update_source_analysis_record,
     update_source_filename_record,
 )
 from models import whisper_model
 from rag_service import (
     clear_orphan_chroma_segments,
+    build_source_analysis,
     delete_notebook_collection,
     delete_source_from_index,
-    generate_suggested_questions,
     get_chroma_consistency_snapshot,
+    index_source_analysis_documents,
     index_source_transcript,
     update_source_filename_metadata,
 )
@@ -140,9 +143,93 @@ def clean_ai_filename(raw_text):
     cleaned = cleaned.splitlines()[0].strip() if cleaned else ""
     cleaned = cleaned.strip('"').strip("'").strip()
     cleaned = re.sub(r"\.(mp3|m4a|wav|webm|ogg|mp4)$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r'^[「『【\[\(（\s]+|[」』】\]\)）\s]+$', "", cleaned).strip()
     if not cleaned or cleaned in {"無法判斷", "無法命名", "錄音", "audio"}:
         return ""
     return cleaned
+
+
+def get_filename_stem(filename):
+    stem, _ = os.path.splitext(os.path.basename(filename or ""))
+    stem = re.sub(r"\s+", " ", stem).strip(" ._-'\"")
+    return stem
+
+
+def is_generic_filename_stem(stem):
+    compact = re.sub(r"[\s._\-()（）\[\]【】]+", "", stem or "").lower()
+    if len(compact) < 3:
+        return True
+
+    generic_names = {
+        "audio", "voice", "memo", "record", "recording", "untitled",
+        "newrecording", "sound", "source", "file", "錄音", "音訊", "聲音",
+        "未命名", "新錄音", "錄製音訊"
+    }
+    if compact in generic_names:
+        return True
+    if re.fullmatch(r"(recording|record|audio|voice|memo|source|file)[a-z0-9]*", compact):
+        return True
+    if re.fullmatch(r"(錄音|音訊|聲音|未命名|新錄音)\d*", compact):
+        return True
+    if re.fullmatch(r"[0-9a-f]{8,32}", compact):
+        return True
+    if re.fullmatch(r"\d{6,}", compact):
+        return True
+    if re.fullmatch(r"\d{4}\d{1,2}\d{1,2}\d*", compact):
+        return True
+    return False
+
+
+def build_filename_context_sample(transcript_text, analysis=None, sample_size=900):
+    if analysis:
+        global_summary = cast(dict[str, Any], analysis.get("global_summary") or {})
+        chapters = cast(list[dict[str, Any]], analysis.get("chapters") or [])
+        analysis_parts = [
+            f"全局標題：{global_summary.get('overall_title', '')}",
+            f"整體摘要：{global_summary.get('overview', '')}",
+        ]
+        core_themes = global_summary.get("core_themes") or []
+        if core_themes:
+            analysis_parts.append(f"核心主題：{'、'.join(str(item) for item in core_themes[:5])}")
+        chapter_titles = [
+            str(chapter.get("title", "")).strip()
+            for chapter in chapters
+            if str(chapter.get("title", "")).strip()
+        ]
+        if chapter_titles:
+            analysis_parts.append(f"章節標題：{'、'.join(chapter_titles[:8])}")
+        analysis_context = "\n".join(part for part in analysis_parts if part.strip())
+        if analysis_context.strip():
+            return analysis_context
+
+    text = re.sub(r"\s+", " ", transcript_text or "").strip()
+    if len(text) <= sample_size * 3:
+        return text
+
+    middle_start = max(0, len(text) // 2 - sample_size // 2)
+    return "\n".join([
+        f"開頭片段：{text[:sample_size]}",
+        f"中段片段：{text[middle_start:middle_start + sample_size]}",
+        f"結尾片段：{text[-sample_size:]}"
+    ])
+
+
+def has_filename_topic_overlap(original_stem, ai_title):
+    original = re.sub(r"[\s._\-()（）\[\]【】]+", "", original_stem or "").lower()
+    title = re.sub(r"[\s._\-()（）\[\]【】]+", "", ai_title or "").lower()
+    if not original or not title:
+        return False
+    if original in title or title in original:
+        return True
+
+    generic_chars = set("的與和及之研究探討分析摘要重點錄音音訊")
+    original_chars = {char for char in original if char not in generic_chars}
+    title_chars = {char for char in title if char not in generic_chars}
+    if not original_chars or not title_chars:
+        return False
+
+    overlap = original_chars & title_chars
+    return len(overlap) / max(len(original_chars), 1) >= 0.35
 
 
 def get_fallback_ai_filename(notebook_id, extension, fallback_filename=None, current_filename=None):
@@ -152,23 +239,52 @@ def get_fallback_ai_filename(notebook_id, extension, fallback_filename=None, cur
     return get_fallback_recording_filename(notebook_id, extension)
 
 
-def generate_ai_audio_filename(notebook_id, transcript_text, extension, fallback_filename=None, current_filename=None):
+def generate_ai_audio_filename(
+    notebook_id,
+    transcript_text,
+    extension,
+    fallback_filename=None,
+    current_filename=None,
+    analysis=None,
+):
+    original_stem = get_filename_stem(fallback_filename)
+    is_generic_original = is_generic_filename_stem(original_stem)
     fallback_filename = get_fallback_ai_filename(notebook_id, extension, fallback_filename, current_filename)
     compact_text = re.sub(r"\s+", "", transcript_text or "")
     if len(compact_text) < 20:
         return fallback_filename
 
-    prompt = f"""
-請根據以下錄音逐字稿，產生一個適合當音檔名稱的繁體中文短檔名。
+    naming_context = build_filename_context_sample(transcript_text, analysis)
+    if is_generic_original:
+        prompt = f"""
+請根據以下錄音逐字稿片段，產生一個精準、自然、適合當音檔名稱的繁體中文短檔名。
 
 規則：
 1. 只輸出檔名本身，不要副檔名。
-2. 長度 4 到 18 個中文字左右。
+2. 長度 6 到 18 個中文字左右。
 3. 不要使用 / \\ : * ? " < > | 等檔名禁用符號。
-4. 如果內容太短、太雜或無法判斷主題，請只輸出：無法判斷。
+4. 請抓整體主題，不要只用單一細節、例子或開頭片段命名。
+5. 如果內容太短、太雜或無法判斷主題，請只輸出：無法判斷。
 
-逐字稿：
-{transcript_text}
+逐字稿片段：
+{naming_context}
+"""
+    else:
+        prompt = f"""
+請根據原始檔名與逐字稿片段，精修出一個更自然、清楚、適合當音檔名稱的繁體中文短檔名。
+
+原始檔名主題：{original_stem}
+
+規則：
+1. 只輸出檔名本身，不要副檔名。
+2. 長度 6 到 18 個中文字左右。
+3. 不要使用 / \\ : * ? " < > | 等檔名禁用符號。
+4. 原始檔名已經提供主題方向，請只做修飾、簡化或補明確性，不可以大幅改變主題。
+5. 如果逐字稿與原始檔名方向不衝突，請優先保留原始檔名的核心詞。
+6. 如果無法精修，請輸出原始檔名主題本身。
+
+逐字稿片段：
+{naming_context}
 """
     try:
         response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
@@ -177,6 +293,8 @@ def generate_ai_audio_filename(notebook_id, transcript_text, extension, fallback
         title = ""
 
     if not title:
+        return fallback_filename
+    if not is_generic_original and not has_filename_topic_overlap(original_stem, title):
         return fallback_filename
 
     filename = sanitize_filename(title, fallback=os.path.splitext(fallback_filename)[0], extension=extension)
@@ -478,39 +596,50 @@ def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filena
         return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
 
     filename = upload_filename
+    try:
+        analysis = build_source_analysis(filename, transcript_text, timed_segments)
+    except Exception as e:
+        return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
+
     if auto_filename:
         filename = generate_ai_audio_filename(
             notebook_id,
             transcript_text,
             original_ext,
             fallback_filename=fallback_filename,
-            current_filename=upload_filename
+            current_filename=upload_filename,
+            analysis=analysis
         )
         try:
             file_path = rename_audio_file(file_path, filename)
         except Exception:
             filename = upload_filename
+    analysis["filename"] = filename
 
+    analysis_json = json.dumps(
+        {key: value for key, value in analysis.items() if key != "structured_knowledge"},
+        ensure_ascii=False
+    )
     try:
         chunks_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments)
+        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis)
         source_saved_at = insert_source_record(
             notebook_id,
             source_id,
             filename,
             transcript_text,
-            json.dumps(timed_segments, ensure_ascii=False)
+            json.dumps(timed_segments, ensure_ascii=False),
+            analysis.get("mode"),
+            "completed",
+            analysis_json
         )
     except Exception as e:
         return {"status": "error", "message": f"寫入向量資料庫失敗: {str(e)}"}
     finally:
         gc.collect()
 
-    try:
-        structured_knowledge = generate_summary(transcript_text)
-    except Exception as e:
-        return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
-
-    suggested_questions = generate_suggested_questions(transcript_text)
+    structured_knowledge = str(analysis.get("structured_knowledge", ""))
+    suggested_questions = cast(list[str], analysis.get("suggested_questions") or [])
     saved_suggested_questions = []
 
     try:
@@ -522,16 +651,78 @@ def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filena
     return {
         "filename": filename,
         "status": "success",
-        "message": f"✅ 成功存入 {chunks_count} 個知識片段。",
+        "message": f"✅ 成功存入 {chunks_count} 個原文片段與 {analysis_chunk_count} 個摘要片段。",
         "raw_transcript": transcript_text,
         "structured_knowledge": structured_knowledge,
         "suggested_questions": saved_suggested_questions,
+        "analysis_mode": analysis.get("mode"),
+        "analysis_status": "completed",
         "source": {
             "id": source_id,
             "filename": filename,
             "added_at": source_saved_at,
             "has_transcript": True,
             "transcript_updated_at": source_saved_at,
-            "indexed_at": source_saved_at
+            "indexed_at": source_saved_at,
+            "analysis_mode": analysis.get("mode"),
+            "analysis_status": "completed",
+            "analysis_updated_at": source_saved_at
+        }
+    }
+
+
+def reanalyze_source_data(notebook_id, source_id):
+    row = get_source_analysis_input(notebook_id, source_id)
+    if not row:
+        return {"status": "error", "message": "找不到指定來源。"}
+
+    filename, transcript_text, timed_segments_json = row
+    transcript_text = (transcript_text or "").strip()
+    if not transcript_text:
+        return {"status": "error", "message": "此來源沒有可用逐字稿，請重新上傳音檔。"}
+
+    try:
+        timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
+        analysis = build_source_analysis(filename, transcript_text, timed_segments)
+        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis)
+        analysis_json = json.dumps(
+            {key: value for key, value in analysis.items() if key != "structured_knowledge"},
+            ensure_ascii=False
+        )
+        updated_at = update_source_analysis_record(
+            notebook_id,
+            source_id,
+            analysis.get("mode"),
+            "completed",
+            analysis_json
+        )
+        saved_suggested_questions = save_suggested_questions(
+            notebook_id,
+            filename,
+            cast(list[str], analysis.get("suggested_questions") or [])
+        )
+        insert_ai_summary_message(notebook_id, filename, str(analysis.get("structured_knowledge", "")))
+    except Exception as e:
+        try:
+            update_source_analysis_record(notebook_id, source_id, None, "failed", "")
+        except Exception:
+            pass
+        return {"status": "error", "message": f"重新深度分析失敗: {str(e)}"}
+
+    return {
+        "status": "success",
+        "message": f"已重新產生分析，並建立 {analysis_chunk_count} 個摘要片段。",
+        "structured_knowledge": analysis.get("structured_knowledge", ""),
+        "suggested_questions": saved_suggested_questions,
+        "analysis_mode": analysis.get("mode"),
+        "analysis_status": "completed",
+        "analysis_chunk_count": analysis_chunk_count,
+        "source": {
+            "id": source_id,
+            "filename": filename,
+            "has_transcript": True,
+            "analysis_mode": analysis.get("mode"),
+            "analysis_status": "completed",
+            "analysis_updated_at": updated_at
         }
     }
