@@ -255,6 +255,13 @@
                                 d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
                         </svg>
                     </button>
+                    <button id="stopAnswerBtn" onclick="stopAnswer()" title="停止回答"
+                        class="hidden p-2.5 m-1 bg-red-500/20 text-red-200 border border-red-500/40 rounded-xl hover:bg-red-500/30 hover:text-white transition duration-200 shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"
+                            class="w-5 h-5">
+                            <path d="M6 6h12v12H6z" />
+                        </svg>
+                    </button>
                 </div>
                 <div class="text-center text-xs text-gray-500 mt-3 flex justify-between max-w-6xl mx-auto px-2">
                     <span></span>
@@ -1473,6 +1480,9 @@
 
         // 自動調整輸入框高度與支援 Enter 送出
         const inputEl = document.getElementById('questionInput');
+        let activeQuestionController = null;
+        let activeQuestionLoadingId = null;
+
         inputEl.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -1484,6 +1494,33 @@
             this.style.height = 'auto';
             this.style.height = (this.scrollHeight) + 'px';
         }, false);
+
+        function setQuestionBusy(isBusy) {
+            const askBtn = document.getElementById('askBtn');
+            const stopBtn = document.getElementById('stopAnswerBtn');
+            askBtn.disabled = isBusy;
+            askBtn.classList.toggle('hidden', isBusy);
+            askBtn.classList.toggle('opacity-40', isBusy);
+            askBtn.classList.toggle('cursor-not-allowed', isBusy);
+            stopBtn.classList.toggle('hidden', !isBusy);
+            inputEl.disabled = isBusy;
+            if (!isBusy) {
+                inputEl.focus();
+            }
+        }
+
+        function removeLoadingMessage(loadingId) {
+            const loadingEl = loadingId ? document.getElementById(loadingId) : null;
+            if (loadingEl) {
+                loadingEl.remove();
+            }
+        }
+
+        function stopAnswer() {
+            if (!activeQuestionController) return;
+            activeQuestionController.abort();
+            fetch('/api/stop-answer/', { method: 'POST' }).catch(() => {});
+        }
 
         function renderSuggestedQuestions(suggestions) {
             const panel = document.getElementById('suggestedQuestionsPanel');
@@ -1896,9 +1933,8 @@
         async function askQuestion(presetQuestion = null) {
             if (!currentNotebookId) return;
             const question = (presetQuestion || inputEl.value).trim();
-            const btn = document.getElementById('askBtn');
 
-            if (!question) return;
+            if (!question || activeQuestionController) return;
 
             // 1. 將使用者的問題加入畫面對話中
             appendMessage('User', question);
@@ -1908,18 +1944,20 @@
             inputEl.style.height = 'auto';
 
             // 鎖定狀態
-            btn.disabled = true;
-            btn.classList.add('opacity-40', 'cursor-not-allowed');
-            inputEl.disabled = true;
+            const controller = new AbortController();
+            activeQuestionController = controller;
+            setQuestionBusy(true);
 
             // 2. 顯示 AI 正在思考的狀態
             const loadingId = 'loading-' + Date.now();
+            activeQuestionLoadingId = loadingId;
             appendMessage('AI', '思考中...', loadingId, true);
 
             try {
                 const response = await fetch('/ask-question/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal,
                     body: JSON.stringify({
                         question: question,
                         notebook_id: currentNotebookId // 傳送當前筆記本 ID
@@ -1928,21 +1966,27 @@
                 const data = await response.json();
 
                 // 移除載入中泡泡
-                document.getElementById(loadingId).remove();
+                removeLoadingMessage(loadingId);
 
                 if (data.status === 'success') {
-                    appendMessage('AI', data.answer, null, false, data.references || []);
+                    const references = data.answerable === false ? [] : (data.references || []);
+                    appendMessage('AI', data.answer, null, false, references);
                 } else {
                     appendMessage('AI', '❌ 系統發生錯誤：' + (data.message || '未知錯誤'));
                 }
             } catch (error) {
-                document.getElementById(loadingId).remove();
-                appendMessage('AI', '❌ 網路連線異常，請檢查後端狀態。');
+                removeLoadingMessage(loadingId);
+                if (error.name === 'AbortError') {
+                    appendMessage('AI', '已停止回答。');
+                } else {
+                    appendMessage('AI', '❌ 網路連線異常，請檢查後端狀態。');
+                }
             } finally {
-                btn.disabled = false;
-                btn.classList.remove('opacity-40', 'cursor-not-allowed');
-                inputEl.disabled = false;
-                inputEl.focus();
+                if (activeQuestionController === controller) {
+                    activeQuestionController = null;
+                    activeQuestionLoadingId = null;
+                    setQuestionBusy(false);
+                }
             }
         }
 

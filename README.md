@@ -41,7 +41,7 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的本�
 | **語音辨識** | faster-whisper (`large-v3-turbo`) | CUDA 加速，VAD 過濾靜音 |
 | **Embedding** | `BAAI/bge-m3` (FP16) | 多語言向量化，1024 維 |
 | **Reranker** | `BAAI/bge-reranker-v2-m3` (FP16) | CrossEncoder 精排 |
-| **LLM** | Ollama `qwen3:14b` | 本地端摘要與回答生成 |
+| **LLM** | Ollama `qwen3.5:9b-q4_K_M` | 本地端摘要與回答生成 |
 | **向量資料庫** | ChromaDB | 每筆記本獨立 Collection |
 | **關聯資料庫** | SQLite | 筆記本、來源、對話與推薦問題 |
 | **關鍵字檢索** | rank_bm25 + jieba | 中文分詞與 BM25 索引 |
@@ -167,7 +167,7 @@ rag_project/
 | **GPU** | NVIDIA GPU（建議 RTX 3060 12GB 以上） |
 | **VRAM** | 建議 16GB（同時載入 Embedding + Reranker + Whisper + LLM） |
 | **RAM** | 建議 32GB |
-| **Ollama** | 需預先安裝並拉取模型 `qwen3:14b` |
+| **Ollama** | 需預先安裝並拉取模型 `qwen3.5:9b-q4_K_M` |
 
 ### VRAM 預估
 
@@ -189,7 +189,7 @@ rag_project/
 
 ```bash
 # 安裝 Ollama：https://ollama.com/download
-ollama pull qwen3:14b
+ollama pull qwen3.5:9b-q4_K_M
 ```
 
 ### 2. 建立虛擬環境並安裝套件
@@ -368,7 +368,7 @@ erDiagram
 
 - **GPU 必要**：Whisper、Embedding、Reranker 均依賴 CUDA GPU，無 GPU 環境無法正常運行
 - **模型載入順序**：`sentence_transformers` 必須先於 `faster_whisper` 載入，否則 Windows 下會因 DLL / OpenMP 衝突導致無聲崩潰（詳見 [troubleshooting_log.md](docs/troubleshooting_log.md)）
-- **Ollama 必須運行**：啟動前需確認 Ollama 服務可用且已拉取 `qwen3:14b` 模型
+- **Ollama 必須運行**：啟動前需確認 Ollama 服務可用且已拉取 `qwen3.5:9b-q4_K_M` 模型
 - **VRAM 管理**：系統會在轉錄前主動卸載 Ollama 模型以釋放 VRAM，避免 OOM 崩潰
 - **單人使用設計**：目前未實作使用者認證與多人並行機制
 

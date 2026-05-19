@@ -201,7 +201,7 @@ VoiceRAG 目前已具備完整核心流程：音檔上傳、Whisper 語音轉文
    - RRF
    - Reranker
    - Whisper large-v3-turbo
-   - Ollama `qwen3:14b`
+   - Ollama `qwen3.5:9b-q4_K_M`
 2. 製作完整資料流程圖：
    - 音檔上傳
    - 語音轉文字

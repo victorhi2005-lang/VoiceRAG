@@ -49,6 +49,7 @@ from rag_service import (
     SourceNotFoundError,
     answer_question,
     get_notebook_collection,
+    stop_ollama_model,
     update_source_transcript,
 )
 
@@ -172,3 +173,11 @@ async def upload_audio(
 @app.post("/ask-question/")
 async def ask_question(request: QuestionRequest):
     return answer_question(request.notebook_id, request.question)
+
+
+@app.post("/api/stop-answer/")
+async def stop_answer():
+    result = stop_ollama_model()
+    if result.get("status") != "success":
+        raise HTTPException(status_code=500, detail=result.get("message", "停止回答失敗"))
+    return result

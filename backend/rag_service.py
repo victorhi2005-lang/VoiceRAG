@@ -20,7 +20,14 @@ from db import (
     save_suggested_questions,
     update_source_transcript_record,
 )
-from models import embeddings_model, reranker
+from models import (
+    EMBEDDING_BATCH_SIZE,
+    RERANKER_BATCH_SIZE,
+    clear_cuda_memory,
+    get_embeddings_model,
+    get_reranker,
+    unload_whisper_model,
+)
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +36,7 @@ chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
 
 Metadata = dict[str, Any]
+OLLAMA_LLM_MODEL = "qwen3.5:9b-q4_K_M"
 REFERENCE_MAX_COUNT = 2
 REFERENCE_SCORE_MARGIN = 1.25
 REFERENCE_MIN_QUESTION_OVERLAP_SCORE = 1.3
@@ -48,6 +56,12 @@ NO_ANSWER_PHRASES = (
     "資料庫的錄音紀錄並未提及",
     "並未提及此資訊",
 )
+NO_ANSWER_MESSAGE = "根據目前資料庫的錄音紀錄，並未提及此資訊。"
+ANSWER_CONTEXT_MIN_COUNT = 3
+ANSWER_CONTEXT_MAX_COUNT = 5
+ANSWER_CONTEXT_SCORE_MARGIN = 1.0
+ANSWERABILITY_STRONG_BEST_OVERLAP = 3.5
+ANSWERABILITY_STRONG_TOTAL_OVERLAP = 6.5
 
 ANALYSIS_VERSION = "1.0"
 LONG_AUDIO_SECONDS = 10 * 60
@@ -108,6 +122,23 @@ def is_no_answer_response(answer: str) -> bool:
     """判斷整段回答是否屬於「資料庫沒有答案」，避免顯示硬湊的來源。"""
     compact_answer = re.sub(r"\s+", "", answer or "")
     return any(phrase in compact_answer for phrase in NO_ANSWER_PHRASES)
+
+
+def stop_ollama_model() -> dict[str, Any]:
+    """嘗試立即卸載目前 LLM，作為停止回答的簡單版後端中止機制。"""
+    try:
+        ollama.generate(model=OLLAMA_LLM_MODEL, prompt="", keep_alive=0)
+        return {
+            "status": "success",
+            "message": "已送出停止 Ollama 模型的請求。",
+            "model": OLLAMA_LLM_MODEL
+        }
+    except Exception as error:
+        return {
+            "status": "error",
+            "message": f"停止 Ollama 模型失敗：{error}",
+            "model": OLLAMA_LLM_MODEL
+        }
 
 
 def normalize_text_list(value: Any, limit: int | None = None) -> list[str]:
@@ -262,7 +293,7 @@ def generate_short_summary(transcript_text: str) -> str:
 語音逐字稿內容：
 {transcript_text}
 """
-    response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
     return response["message"]["content"]
 
 
@@ -288,7 +319,7 @@ JSON 欄位固定如下：
 逐字稿：
 {chapter["text"]}
 """
-    response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
     parsed = extract_json_object(response["message"]["content"])
     title = str(parsed.get("title") or f"第 {chapter['index']} 段重點").strip()
     summary = str(parsed.get("summary") or response["message"]["content"]).strip()
@@ -339,7 +370,7 @@ JSON 欄位固定如下：
 段落分析結果：
 {json.dumps(chapter_payload, ensure_ascii=False)}
 """
-    response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
     parsed = extract_json_object(response["message"]["content"])
     return {
         "overall_title": str(parsed.get("overall_title") or "錄音重點摘要").strip(),
@@ -765,7 +796,9 @@ def filter_relevant_references(
     reference_query = f"問題：{question}\n回答：{answer}"
     pairs: list[tuple[str, str]] = [(reference_query, item["doc"]) for item in prepared_candidates]
     try:
-        semantic_scores = normalize_reranker_scores(reranker.predict(cast(Any, pairs)))
+        semantic_scores = normalize_reranker_scores(
+            get_reranker().predict(cast(Any, pairs), batch_size=RERANKER_BATCH_SIZE)
+        )
     except Exception:
         semantic_scores = [
             item["question_overlap_score"] + item["answer_overlap_score"]
@@ -805,7 +838,7 @@ def semantic_chunk(text, similarity_threshold=0.65, max_chunk_size=600, min_chun
     if len(sentences) <= 2:
         return [text] if text.strip() else []
 
-    sentence_embeddings = embeddings_model.encode(sentences)
+    sentence_embeddings = get_embeddings_model().encode(sentences, batch_size=EMBEDDING_BATCH_SIZE)
 
     similarities = []
     for i in range(len(sentence_embeddings) - 1):
@@ -1146,7 +1179,10 @@ def index_source_analysis_documents(notebook_id, source_id, filename, analysis):
         rebuild_bm25_index(notebook_id)
         return 0
 
-    vectors = [embeddings_model.encode(document).tolist() for document in documents]
+    vectors = [
+        get_embeddings_model().encode(document, batch_size=EMBEDDING_BATCH_SIZE).tolist()
+        for document in documents
+    ]
     for doc_id, vector, document, metadata in zip(ids, vectors, documents, metadatas):
         collection.add(
             ids=[doc_id],
@@ -1170,7 +1206,10 @@ def index_source_transcript(notebook_id, source_id, filename, transcript_text, t
         raise ValueError("逐字稿內容不足，無法建立索引")
 
     chunk_metadatas = build_chunk_metadata(chunks, timed_segments, filename, source_id)
-    vectors = [embeddings_model.encode(chunk).tolist() for chunk in chunks]
+    vectors = [
+        get_embeddings_model().encode(chunk, batch_size=EMBEDDING_BATCH_SIZE).tolist()
+        for chunk in chunks
+    ]
 
     collection = get_notebook_collection(notebook_id)
     delete_source_chunks(collection, source_id)
@@ -1309,7 +1348,7 @@ def generate_suggested_questions(transcript_text):
 {transcript_text}
 """
     try:
-        response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
         raw_questions = response["message"]["content"]
         return parse_suggested_questions(raw_questions, 3)
     except Exception:
@@ -1369,6 +1408,133 @@ def get_context_block_label(metadata: Metadata, index: int) -> str:
         time_range = metadata.get("time_range", "時間未記錄")
         return f"章節摘要 {index}（{time_range}）"
     return f"原文片段 {index}"
+
+
+def select_answer_contexts(ranked: list[tuple[float, str]]) -> list[tuple[float, str]]:
+    """從 reranker 結果中挑出較可信的少量片段，避免把弱相關雜訊餵給 LLM。"""
+    if not ranked:
+        return []
+
+    best_score = ranked[0][0]
+    selected: list[tuple[float, str]] = []
+    for score, doc in ranked:
+        if len(selected) < ANSWER_CONTEXT_MIN_COUNT or score >= best_score - ANSWER_CONTEXT_SCORE_MARGIN:
+            selected.append((score, doc))
+        if len(selected) >= ANSWER_CONTEXT_MAX_COUNT:
+            break
+    return selected
+
+
+def normalize_confidence(value: Any, default: str = "low") -> str:
+    confidence = str(value or "").strip().lower()
+    return confidence if confidence in {"high", "medium", "low"} else default
+
+
+def parse_answerable_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"true", "yes", "y", "1", "可回答", "可以回答"}
+
+
+def get_answerability_evidence_signal(question: str, ranked: list[tuple[float, str]]) -> dict[str, Any]:
+    """用關鍵詞重疊當作保護機制，避免 LLM 可答性判斷過度保守。"""
+    question_tokens = get_meaningful_tokens(question)
+    if not question_tokens:
+        return {
+            "strong_evidence": False,
+            "best_overlap_score": 0.0,
+            "total_overlap_score": 0.0,
+        }
+
+    best_overlap_score = 0.0
+    total_overlap_score = 0.0
+    for _, doc in ranked:
+        doc_tokens = get_meaningful_tokens(doc)
+        overlap_score = score_token_overlap(question_tokens & doc_tokens)
+        best_overlap_score = max(best_overlap_score, overlap_score)
+        total_overlap_score += overlap_score
+
+    strong_evidence = (
+        best_overlap_score >= ANSWERABILITY_STRONG_BEST_OVERLAP
+        or (
+            best_overlap_score >= 3.0
+            and total_overlap_score >= ANSWERABILITY_STRONG_TOTAL_OVERLAP
+        )
+    )
+    return {
+        "strong_evidence": strong_evidence,
+        "best_overlap_score": best_overlap_score,
+        "total_overlap_score": total_overlap_score,
+    }
+
+
+def judge_answerability(question: str, retrieved_context: str, history_text: str = "") -> dict[str, Any]:
+    """用本地 LLM 先判斷資料是否足以回答，避免弱相關片段造成幻覺。"""
+    if not retrieved_context.strip():
+        return {
+            "answerable": False,
+            "confidence": "low",
+            "reason": "no_retrieved_context"
+        }
+
+    history_section = ""
+    if history_text:
+        history_section = f"""
+【歷史對話】
+{history_text}
+
+注意：歷史對話只能用來理解代名詞或追問脈絡，不能當作回答證據。"""
+
+    prompt = f"""你是一個 RAG 可答性判斷器，只負責判斷「參考資料是否足以支撐回答使用者問題」，不要真的回答問題。
+
+判斷規則：
+1. 如果參考資料提供了問題的核心主題、相關事實、摘要或可整理的證據，answerable 應該是 true。
+2. 問題不需要逐字出現在參考資料中；只要能根據參考資料做合理整理、比較、歸納或說明，就可以回答。
+3. 如果只是出現少量相同關鍵字、相似主題、影片標題相關，卻缺少問題所需的核心證據，answerable 必須是 false。
+4. 如果需要依靠常識、外部知識、推測、延伸聯想才能回答，answerable 必須是 false。
+5. 如果問題是一般知識、天氣、程式、人生建議，但參考資料沒有明確討論，answerable 必須是 false。
+6. confidence 只能是 high、medium、low。
+7. 只能輸出 JSON，不要輸出 Markdown、解釋文字或其他內容。
+
+輸出格式：
+{{
+  "answerable": false,
+  "confidence": "low",
+  "reason": "一句話說明判斷原因"
+}}
+{history_section}
+
+【參考資料】
+{retrieved_context}
+
+【使用者問題】
+{question}
+"""
+    try:
+        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+        parsed = extract_json_object(response["message"]["content"])
+    except Exception:
+        return {
+            "answerable": False,
+            "confidence": "low",
+            "reason": "answerability_judge_failed"
+        }
+    if "answerable" not in parsed:
+        return {
+            "answerable": False,
+            "confidence": "low",
+            "reason": "answerability_parse_failed"
+        }
+
+    answerable = parse_answerable_value(parsed.get("answerable"))
+    confidence = normalize_confidence(parsed.get("confidence"), default="medium" if answerable else "low")
+    return {
+        "answerable": answerable,
+        "confidence": confidence,
+        "reason": str(parsed.get("reason") or "").strip()
+    }
 
 
 class SourceNotFoundError(Exception):
@@ -1448,8 +1614,13 @@ def update_source_transcript(notebook_id, source_id, transcript_text):
 
 
 def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
+    ollama_was_used = False
     try:
-        query_vector = cast(list[float], embeddings_model.encode(question).tolist())
+        unload_whisper_model()
+        query_vector = cast(
+            list[float],
+            get_embeddings_model().encode(question, batch_size=EMBEDDING_BATCH_SIZE).tolist(),
+        )
 
         collection = get_notebook_collection(notebook_id)
         if collection.count() == 0:
@@ -1478,8 +1649,13 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         if notebook_id in bm25_indices and bm25_indices[notebook_id] is not None:
             query_tokens = tokenize_chinese(question)
             bm25_scores = bm25_indices[notebook_id].get_scores(query_tokens)
-            top_n = min(n_candidates, len(bm25_scores))
-            top_indices = [int(i) for i in bm25_scores.argsort()[-top_n:][::-1]]
+            scored_indices = [
+                (int(index), float(score))
+                for index, score in enumerate(bm25_scores)
+                if float(score) > 0
+            ]
+            scored_indices.sort(key=lambda item: item[1], reverse=True)
+            top_indices = [index for index, _ in scored_indices[:n_candidates]]
             bm25_top_docs = [bm25_docs[notebook_id][i] for i in top_indices]
             if notebook_id in bm25_metas:
                 for i in top_indices:
@@ -1501,10 +1677,10 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         if not pairs:
             return {"status": "error", "message": "目前知識庫沒有可用的文字片段，請重新上傳或重新分析來源。"}
 
-        raw_scores = reranker.predict(cast(Any, pairs))
+        raw_scores = get_reranker().predict(cast(Any, pairs), batch_size=RERANKER_BATCH_SIZE)
         scores = normalize_reranker_scores(raw_scores)
 
-        ranked = sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True)[:8]
+        ranked = select_answer_contexts(sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True))
         top_documents = [doc for _, doc in ranked]
         reference_candidates: list[dict[str, Any]] = []
         context_blocks: list[str] = []
@@ -1535,18 +1711,48 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
                 history_lines.append(f"{role}：{text}")
             history_text = "\n".join(history_lines)
 
+        evidence_signal = get_answerability_evidence_signal(question, ranked)
+        ollama_was_used = True
+        answerability = judge_answerability(question, retrieved_context, history_text)
+        if not answerability["answerable"] and evidence_signal["strong_evidence"]:
+            answerability = {
+                "answerable": True,
+                "confidence": "medium",
+                "reason": "retrieved_context_has_strong_keyword_evidence"
+            }
+
+        if not answerability["answerable"]:
+            references: list[dict[str, Any]] = []
+            try:
+                append_qa_messages(notebook_id, question, NO_ANSWER_MESSAGE, references)
+            except Exception:
+                pass
+
+            return {
+                "status": "success",
+                "question": question,
+                "answer": NO_ANSWER_MESSAGE,
+                "reference_sources": [],
+                "source_files": [],
+                "references": references,
+                "answerable": False,
+                "confidence": answerability["confidence"],
+                "refusal_reason": answerability.get("reason") or "no_relevant_evidence"
+            }
+
         rag_prompt = f"""你現在是一個嚴格且專業的「知識庫檢索助理」。
-請你【完全且只能】依據下方的【參考資料】來回答使用者的問題。
+系統已先確認參考資料可能足以回答問題，但你仍然必須【完全且只能】依據下方的【參考資料】作答。
 
 ⚠️ 絕對遵守以下規則：
 1.【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字！
-2. 如果【參考資料】中有答案，請用條理清晰、分點說明的方式回答。
+2. 如果【參考資料】直接支持答案，請用條理清晰、分點說明的方式回答。
 3. 如果【參考資料】無法回答問題，請誠實回答：「根據目前資料庫的錄音紀錄，並未提及此資訊」，【絕對不可以】編造答案。
-4. 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
-5. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
-6. 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
-7. 若有【歷史對話】，請結合上下文脈絡理解使用者的追問意圖。
-8. 若參考資料同時包含「全局摘要」、「章節摘要」與「原文片段」，回答整體主題、摘要、潤色或深度解析問題時，請優先使用全局摘要與章節摘要，再用原文片段補細節。"""
+4. 禁止根據常識、影片標題、相似主題、外部知識或你的背景知識延伸回答。
+5. 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
+6. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
+7. 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
+8. 若有【歷史對話】，只能用來理解追問脈絡，不能把歷史對話當作新的事實來源。
+9. 若參考資料同時包含「全局摘要」、「章節摘要」與「原文片段」，回答整體主題、摘要、潤色或深度解析問題時，請優先使用全局摘要與章節摘要，再用原文片段補細節。"""
 
         if history_text:
             rag_prompt += f"\n\n【歷史對話】：\n{history_text}"
@@ -1554,9 +1760,11 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         rag_prompt += f"\n\n【參考資料】：\n{retrieved_context}"
         rag_prompt += f"\n\n【使用者的問題】：\n{question}"
 
-        response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": rag_prompt + "\n/no_think"}])
+        ollama_was_used = True
+        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": rag_prompt + "\n/no_think"}])
         ai_answer = strip_model_source_mentions(response["message"]["content"])
-        references = filter_relevant_references(question, ai_answer, reference_candidates)
+        answerable = not is_no_answer_response(ai_answer)
+        references = filter_relevant_references(question, ai_answer, reference_candidates) if answerable else []
         source_files = list(dict.fromkeys(reference["source"] for reference in references))
 
         try:
@@ -1570,8 +1778,15 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
             "answer": ai_answer,
             "reference_sources": top_documents,
             "source_files": source_files,
-            "references": references
+            "references": references,
+            "answerable": answerable,
+            "confidence": answerability["confidence"] if answerable else "low",
+            "refusal_reason": "" if answerable else "model_returned_no_answer"
         }
 
     except Exception as e:
         return {"status": "error", "message": f"問答過程發生錯誤: {str(e)}"}
+    finally:
+        if ollama_was_used:
+            stop_ollama_model()
+        clear_cuda_memory()

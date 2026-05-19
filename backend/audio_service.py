@@ -7,7 +7,6 @@ import uuid
 from typing import Any, cast
 
 import ollama
-import torch
 
 from db import (
     delete_notebook_record,
@@ -24,8 +23,14 @@ from db import (
     update_source_analysis_record,
     update_source_filename_record,
 )
-from models import whisper_model
+from models import (
+    WHISPER_BATCH_SIZE,
+    clear_cuda_memory,
+    get_whisper_model,
+    unload_whisper_model,
+)
 from rag_service import (
+    OLLAMA_LLM_MODEL,
     clear_orphan_chroma_segments,
     build_source_analysis,
     delete_notebook_collection,
@@ -287,7 +292,7 @@ def generate_ai_audio_filename(
 {naming_context}
 """
     try:
-        response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
         title = clean_ai_filename(response["message"]["content"])
     except Exception:
         title = ""
@@ -534,32 +539,34 @@ def clear_orphan_chroma_data():
 
 def transcribe_audio(file_path):
     try:
-        ollama.generate(model="qwen3:14b", prompt="", keep_alive=0)
-        torch.cuda.empty_cache()
-        gc.collect()
+        ollama.generate(model=OLLAMA_LLM_MODEL, prompt="", keep_alive=0)
+        clear_cuda_memory()
     except Exception:
         pass
 
-    segments, info = whisper_model.transcribe(
-        file_path,
-        beam_size=5,
-        language="zh",
-        initial_prompt="這是一段繁體中文的台灣口音逐字稿：",
-        vad_filter=True,
-        batch_size=16
-    )
-    timed_segments = [
-        {
-            "text": segment.text,
-            "start": segment.start,
-            "end": segment.end
-        }
-        for segment in segments
-    ]
-    transcript_text = "".join([segment["text"] for segment in timed_segments])
-    torch.cuda.empty_cache()
-    gc.collect()
-    return transcript_text, timed_segments
+    try:
+        whisper_model = get_whisper_model()
+        segments, info = whisper_model.transcribe(
+            file_path,
+            beam_size=5,
+            language="zh",
+            initial_prompt="這是一段繁體中文的台灣口音逐字稿：",
+            vad_filter=True,
+            batch_size=WHISPER_BATCH_SIZE
+        )
+        timed_segments = [
+            {
+                "text": segment.text,
+                "start": segment.start,
+                "end": segment.end
+            }
+            for segment in segments
+        ]
+        transcript_text = "".join([segment["text"] for segment in timed_segments])
+        return transcript_text, timed_segments
+    finally:
+        unload_whisper_model()
+        gc.collect()
 
 
 def generate_summary(transcript_text):
@@ -572,7 +579,7 @@ def generate_summary(transcript_text):
         
         語音逐字稿內容：\n{transcript_text}
         """
-    response = ollama.chat(model="qwen3:14b", messages=[{"role": "user", "content": prompt + "\n/no_think"}])
+    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
     return response["message"]["content"]
 
 
