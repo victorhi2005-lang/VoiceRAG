@@ -221,6 +221,18 @@
             <!-- 標題列 -->
             <div class="p-4 flex justify-between items-center border-b border-[#333]">
                 <h2 class="text-base font-semibold text-gray-200">對話</h2>
+                <div class="flex items-center gap-2">
+                    <span class="hidden sm:inline text-xs text-gray-500">AI 模式</span>
+                    <div id="llmProviderToggle"
+                        class="inline-flex rounded-xl border border-[#444] bg-[#25272c] p-1 shadow-inner">
+                        <button id="llmProviderOllamaBtn" type="button" onclick="setLlmProvider('ollama')"
+                            class="px-3 py-1.5 rounded-lg text-xs font-medium transition"
+                            title="使用本機 Ollama 模型回答與分析">本地 AI</button>
+                        <button id="llmProviderGeminiBtn" type="button" onclick="setLlmProvider('gemini')"
+                            class="px-3 py-1.5 rounded-lg text-xs font-medium transition"
+                            title="使用 Google Gemini API 回答與分析">Gemini</button>
+                    </div>
+                </div>
             </div>
 
             <!-- 對話歷史紀錄 -->
@@ -229,7 +241,7 @@
                 <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
                     <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-base">你好！我是你的專屬
                         VoiceRAG 知識助理。
-                        請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
+                        請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，你可以直接提問，也可以從來源旁的星星選單產生摘要。</div>
                 </div>
             </div>
 
@@ -277,11 +289,16 @@
             <h3 id="renameModalTitle" class="text-lg font-semibold text-gray-200 mb-4">重新命名筆記本</h3>
             <input type="text" id="renameInput"
                 class="w-full bg-[#131314] border border-[#444] rounded-lg px-3 py-2 text-gray-200 focus:outline-none focus:border-gray-400 mb-4">
-            <div class="flex justify-end space-x-3">
-                <button onclick="closeRenameModal()"
-                    class="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
-                <button onclick="submitRename()"
-                    class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg">儲存</button>
+            <p id="renameStatus" class="min-h-[1.25rem] text-sm text-gray-500 mb-3"></p>
+            <div class="flex items-center justify-between gap-3">
+                <button id="suggestFilenameBtn" type="button" onclick="suggestSourceFilename()"
+                    class="hidden px-4 py-2 text-sm bg-[#2f333a] hover:bg-[#3a3f48] disabled:bg-[#25272c] disabled:text-gray-500 disabled:cursor-not-allowed text-gray-200 rounded-lg transition">AI 取檔名</button>
+                <div class="ml-auto flex justify-end space-x-3">
+                    <button onclick="closeRenameModal()"
+                        class="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
+                    <button onclick="submitRename()"
+                        class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg">儲存</button>
+                </div>
             </div>
         </div>
     </div>
@@ -353,6 +370,7 @@
         let currentNotebookId = null;
         let renameTargetId = null;
         let renameMode = 'notebook';
+        let renameTargetSource = null;
         let currentTranscriptSourceId = null;
         let currentTranscriptOriginalText = '';
         let activeAudio = null;
@@ -366,6 +384,12 @@
         let recordedChunks = [];
         let recordingTimer = null;
         let recordingStartedAt = 0;
+        const LLM_PROVIDER_STORAGE_KEY = 'voicerag-llm-provider';
+        let currentLlmProvider = localStorage.getItem(LLM_PROVIDER_STORAGE_KEY) || 'ollama';
+        let llmProviders = {
+            ollama: { id: 'ollama', label: '本地 AI', available: true, message: '' },
+            gemini: { id: 'gemini', label: 'Gemini', available: false, message: 'Gemini API Key 尚未設定' }
+        };
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -470,6 +494,94 @@
             toast.dataset.closing = 'true';
             toast.classList.add('opacity-0', 'translate-y-1');
             window.setTimeout(() => toast.remove(), 200);
+        }
+
+        function getLlmProviderMeta(provider) {
+            return llmProviders[provider] || llmProviders.ollama;
+        }
+
+        function getLlmProviderUrl(url) {
+            const separator = url.includes('?') ? '&' : '?';
+            return `${url}${separator}llm_provider=${encodeURIComponent(currentLlmProvider)}`;
+        }
+
+        function renderLlmProviderToggle() {
+            const ollamaBtn = document.getElementById('llmProviderOllamaBtn');
+            const geminiBtn = document.getElementById('llmProviderGeminiBtn');
+            if (!ollamaBtn || !geminiBtn) return;
+
+            const buttons = [
+                { provider: 'ollama', element: ollamaBtn },
+                { provider: 'gemini', element: geminiBtn }
+            ];
+
+            buttons.forEach(({ provider, element }) => {
+                const meta = getLlmProviderMeta(provider);
+                const isActive = currentLlmProvider === provider;
+                element.disabled = !meta.available;
+                element.className = [
+                    'px-3 py-1.5 rounded-lg text-xs font-medium transition',
+                    isActive ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white hover:bg-[#333]',
+                    !meta.available ? 'opacity-40 cursor-not-allowed hover:bg-transparent hover:text-gray-400' : ''
+                ].join(' ');
+                element.title = meta.available ? `${meta.label}：${meta.model || ''}` : meta.message;
+            });
+        }
+
+        function setLlmProvider(provider) {
+            const meta = getLlmProviderMeta(provider);
+            if (!meta.available) {
+                showToast({
+                    tone: 'error',
+                    title: 'Gemini 尚未啟用',
+                    message: meta.message || '請先在 backend/.env 設定 GEMINI_API_KEY。'
+                });
+                renderLlmProviderToggle();
+                return;
+            }
+
+            currentLlmProvider = provider;
+            localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, provider);
+            renderLlmProviderToggle();
+            preloadLlmProvider(provider);
+        }
+
+        async function preloadLlmProvider(provider) {
+            if (provider !== 'gemini') return;
+            try {
+                await fetch(`/api/llm-providers/preload?llm_provider=${encodeURIComponent(provider)}`, {
+                    method: 'POST'
+                });
+            } catch (error) {
+                console.warn('Gemini preload failed:', error);
+            }
+        }
+
+        async function fetchLlmProviders() {
+            renderLlmProviderToggle();
+            try {
+                const res = await fetch('/api/llm-providers/');
+                const data = await readSuccessfulApiResponse(res, '讀取 AI 模式設定失敗');
+                const providerMap = {};
+                (data.providers || []).forEach(provider => {
+                    providerMap[provider.id] = provider;
+                });
+                llmProviders = { ...llmProviders, ...providerMap };
+
+                if (!llmProviders[currentLlmProvider]?.available) {
+                    currentLlmProvider = data.default_provider || 'ollama';
+                    if (!llmProviders[currentLlmProvider]?.available) {
+                        currentLlmProvider = 'ollama';
+                    }
+                    localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, currentLlmProvider);
+                }
+            } catch (error) {
+                currentLlmProvider = 'ollama';
+                localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, currentLlmProvider);
+            } finally {
+                renderLlmProviderToggle();
+                preloadLlmProvider(currentLlmProvider);
+            }
         }
 
         function setButtonBusy(button, isBusy) {
@@ -659,7 +771,10 @@
         }
 
         // 頁面載入時，獲取筆記本列表
-        document.addEventListener('DOMContentLoaded', fetchNotebooks);
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchLlmProviders();
+            fetchNotebooks();
+        });
 
         // 獲取並渲染筆記本列表
         async function fetchNotebooks() {
@@ -796,16 +911,16 @@
             if (!source.has_transcript) return null;
             const mode = source.analysis_mode || '';
             const status = source.analysis_status || '';
-            if (status === 'completed' && mode === 'deep') {
-                return { text: '深度分析完成', className: 'text-emerald-300 border-emerald-500/40' };
-            }
-            if (status === 'completed') {
-                return { text: '快速摘要', className: 'text-blue-300 border-blue-500/40' };
-            }
             if (status === 'failed') {
-                return { text: '分析失敗，可重新分析', className: 'text-red-300 border-red-500/40' };
+                return { text: '摘要失敗，可重新摘要', className: 'text-red-300 border-red-500/40' };
             }
-            return { text: '可重新分析', className: 'text-amber-300 border-amber-500/40' };
+            if (mode === 'deep') {
+                return { text: '深度分析', className: 'text-emerald-300 border-emerald-500/40' };
+            }
+            if (mode === 'quick') {
+                return { text: '快速分析', className: 'text-blue-300 border-blue-500/40' };
+            }
+            return null;
         }
 
         function createSourceElement(source) {
@@ -850,16 +965,37 @@
                 openButton.appendChild(badge);
             }
 
-            const reanalyzeButton = document.createElement('button');
-            reanalyzeButton.type = 'button';
-            reanalyzeButton.className = 'w-8 h-8 rounded-md flex items-center justify-center text-gray-500 hover:bg-blue-500/10 hover:text-blue-300 shrink-0 transition disabled:opacity-40 disabled:cursor-not-allowed';
-            reanalyzeButton.title = '重新深度分析';
-            reanalyzeButton.disabled = !source.has_transcript;
-            reanalyzeButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></svg>';
-            reanalyzeButton.onclick = (event) => {
+            const analysisDropdown = document.createElement('div');
+            analysisDropdown.className = 'dropdown relative shrink-0';
+
+            const analysisButton = document.createElement('button');
+            analysisButton.type = 'button';
+            analysisButton.className = 'w-8 h-8 rounded-md flex items-center justify-center text-gray-500 hover:bg-blue-500/10 hover:text-blue-300 shrink-0 transition disabled:opacity-40 disabled:cursor-not-allowed';
+            analysisButton.title = '摘要與分析';
+            analysisButton.disabled = !source.has_transcript;
+            analysisButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></svg>';
+
+            const analysisDropdownId = `source-analysis-${source.id}`;
+            analysisButton.onclick = (event) => toggleDropdown(event, analysisDropdownId);
+
+            const analysisMenu = document.createElement('div');
+            analysisMenu.id = analysisDropdownId;
+            analysisMenu.className = 'dropdown-content absolute right-0 mt-1 w-36 bg-[#1e1f22] border border-[#333] rounded-lg shadow-xl z-40 py-1';
+
+            const summarizeButton = document.createElement('button');
+            summarizeButton.type = 'button';
+            summarizeButton.className = 'w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white disabled:text-gray-500 disabled:hover:bg-transparent';
+            summarizeButton.disabled = !source.has_transcript;
+            summarizeButton.textContent = '摘要檔案';
+            summarizeButton.onclick = (event) => {
                 event.stopPropagation();
-                reanalyzeSource(source, reanalyzeButton);
+                closeAllDropdowns();
+                summarizeSource(source, analysisButton);
             };
+
+            analysisMenu.appendChild(summarizeButton);
+            analysisDropdown.appendChild(analysisButton);
+            analysisDropdown.appendChild(analysisMenu);
 
             const renameButton = document.createElement('button');
             renameButton.type = 'button';
@@ -910,7 +1046,7 @@
 
             row.appendChild(playButton);
             row.appendChild(openButton);
-            row.appendChild(reanalyzeButton);
+            row.appendChild(analysisDropdown);
             row.appendChild(renameButton);
             row.appendChild(deleteButton);
             item.appendChild(row);
@@ -1061,14 +1197,20 @@
             resetActiveAudioButton();
         }
 
+        function closeAllDropdowns(exceptId = null) {
+            document.querySelectorAll('.dropdown-content').forEach(el => {
+                if (!exceptId || el.id !== exceptId) {
+                    el.style.display = 'none';
+                }
+            });
+        }
+
         // 切換選項下拉選單
         function toggleDropdown(event, id) {
             event.stopPropagation(); // 避免觸發進入筆記本
 
             // 先關閉所有其他的 dropdown
-            document.querySelectorAll('.dropdown-content').forEach(el => {
-                if (el.id !== id) el.style.display = 'none';
-            });
+            closeAllDropdowns(id);
 
             const dropdown = document.getElementById(id);
             dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
@@ -1077,9 +1219,7 @@
         // 點擊畫面其他地方時關閉所有下拉選單
         document.addEventListener('click', function (event) {
             if (!event.target.closest('.dropdown')) {
-                document.querySelectorAll('.dropdown-content').forEach(el => {
-                    el.style.display = 'none';
-                });
+                closeAllDropdowns();
             }
         });
 
@@ -1130,7 +1270,7 @@
                         chatHistory.innerHTML = `
                             <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
                                 <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-sm">你好！我是你的專屬 VoiceRAG 知識助理。
-請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，我會自動幫你萃取重點，接著你就能開始進行檢索提問。</div>
+請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，你可以直接提問，也可以從來源旁的星星選單產生摘要。</div>
                             </div>
                         `;
                     }
@@ -1251,25 +1391,25 @@
             }
         }
 
-        async function reanalyzeSource(source, triggerButton = null) {
+        async function analyzeSource(source, triggerButton = null, options = {}) {
             const notebookId = currentNotebookId;
             if (!notebookId || !source || !source.id || !source.has_transcript) return;
 
             const displayFilename = document.querySelector(`[data-source-name="${source.id}"]`)?.textContent || source.filename;
-            if (!confirm(`要重新分析「${displayFilename}」嗎？長音檔可能需要等待較久，但會更新摘要、推薦問題與可檢索的摘要索引。`)) return;
+            if (options.confirmMessage && !confirm(options.confirmMessage(displayFilename))) return;
 
             setButtonBusy(triggerButton, true);
             showToast({
                 tone: 'info',
-                title: '開始重新分析',
-                message: '系統會用已保存的逐字稿重新產生長音檔摘要。'
+                title: options.startTitle || '開始分析',
+                message: options.startMessage || '系統會用已保存的逐字稿產生摘要。'
             });
 
             try {
-                const res = await fetch(`/api/notebooks/${notebookId}/sources/${source.id}/reanalyze`, {
+                const res = await fetch(getLlmProviderUrl(`/api/notebooks/${notebookId}/sources/${source.id}/reanalyze`), {
                     method: 'POST'
                 });
-                const data = await readSuccessfulApiResponse(res, '重新分析失敗');
+                const data = await readSuccessfulApiResponse(res, options.errorPrefix || '分析失敗');
                 const updatedSource = { ...source, ...(data.source || {}) };
                 const sourceEl = document.getElementById(`source-item-${source.id}`);
                 if (sourceEl) {
@@ -1283,27 +1423,46 @@
 
                 showToast({
                     tone: 'success',
-                    title: '重新分析完成',
+                    title: options.successTitle || '分析完成',
                     message: data.message || '摘要與索引已更新。'
                 });
             } catch (err) {
-                console.error("重新分析失敗", err);
+                console.error(options.consoleMessage || "分析失敗", err);
                 showToast({
                     tone: 'error',
-                    title: '重新分析失敗',
-                    message: err.message || '重新分析時發生錯誤，請稍後再試。'
+                    title: options.failureTitle || '分析失敗',
+                    message: err.message || '分析時發生錯誤，請稍後再試。'
                 });
             } finally {
                 setButtonBusy(triggerButton, false);
             }
         }
 
+        function summarizeSource(source, triggerButton = null) {
+            return analyzeSource(source, triggerButton, {
+                startTitle: '開始摘要檔案',
+                startMessage: '系統會用已保存的逐字稿產生摘要、推薦問題與摘要索引。',
+                successTitle: '摘要完成',
+                failureTitle: '摘要失敗',
+                errorPrefix: '摘要失敗',
+                consoleMessage: '摘要失敗'
+            });
+        }
+
         // 修改名稱 Modal 邏輯
         function openRenameModal(id, currentName, mode = 'notebook') {
             renameTargetId = id;
             renameMode = mode;
+            renameTargetSource = null;
             const input = document.getElementById('renameInput');
+            const status = document.getElementById('renameStatus');
+            const suggestBtn = document.getElementById('suggestFilenameBtn');
             input.value = currentName;
+            if (status) status.textContent = '';
+            if (suggestBtn) {
+                suggestBtn.classList.toggle('hidden', mode !== 'source');
+                suggestBtn.disabled = mode !== 'source';
+            }
             document.getElementById('renameModalTitle').textContent = mode === 'source'
                 ? '修改來源檔名'
                 : '重新命名筆記本';
@@ -1313,12 +1472,68 @@
 
         function openSourceRenameModal(source) {
             openRenameModal(source.id, source.filename, 'source');
+            renameTargetSource = source;
+            const suggestBtn = document.getElementById('suggestFilenameBtn');
+            if (suggestBtn) {
+                suggestBtn.disabled = !source.has_transcript;
+                suggestBtn.title = source.has_transcript ? '根據逐字稿產生檔名' : '此來源沒有逐字稿，無法 AI 取檔名';
+            }
         }
 
         function closeRenameModal() {
             renameTargetId = null;
             renameMode = 'notebook';
+            renameTargetSource = null;
+            const status = document.getElementById('renameStatus');
+            const suggestBtn = document.getElementById('suggestFilenameBtn');
+            if (status) status.textContent = '';
+            if (suggestBtn) {
+                suggestBtn.classList.add('hidden');
+                suggestBtn.disabled = false;
+                suggestBtn.textContent = 'AI 取檔名';
+                suggestBtn.title = '';
+            }
             document.getElementById('renameModal').classList.add('hidden');
+        }
+
+        async function suggestSourceFilename() {
+            if (renameMode !== 'source' || !currentNotebookId || !renameTargetId) return;
+
+            const button = document.getElementById('suggestFilenameBtn');
+            const status = document.getElementById('renameStatus');
+            const input = document.getElementById('renameInput');
+
+            setButtonBusy(button, true);
+            button.textContent = '產生中...';
+            if (status) {
+                status.textContent = '正在根據逐字稿產生檔名...';
+                status.className = 'min-h-[1.25rem] text-sm text-gray-500 mb-3';
+            }
+
+            try {
+                const res = await fetch(getLlmProviderUrl(`/api/notebooks/${currentNotebookId}/sources/${renameTargetId}/filename/suggest`), {
+                    method: 'POST'
+                });
+                const data = await readSuccessfulApiResponse(res, 'AI 取檔名失敗');
+                if (data.filename) {
+                    input.value = data.filename;
+                    input.focus();
+                    input.select();
+                }
+                if (status) {
+                    status.textContent = '已產生建議檔名，確認後可按儲存。';
+                    status.className = 'min-h-[1.25rem] text-sm text-green-300 mb-3';
+                }
+            } catch (err) {
+                console.error('AI 取檔名失敗', err);
+                if (status) {
+                    status.textContent = err.message || 'AI 取檔名失敗，請稍後再試。';
+                    status.className = 'min-h-[1.25rem] text-sm text-red-300 mb-3';
+                }
+            } finally {
+                setButtonBusy(button, false);
+                button.textContent = 'AI 取檔名';
+            }
         }
 
         async function submitRename() {
@@ -1336,10 +1551,10 @@
                     if (!res.ok || data.status !== 'success') {
                         throw new Error(data.detail || data.message || '修改檔名失敗');
                     }
-                    const sourceName = document.querySelector(`[data-source-name="${renameTargetId}"]`);
-                    if (sourceName && data.source) {
-                        sourceName.textContent = data.source.filename;
-                        sourceName.title = data.source.filename;
+                    const sourceEl = document.getElementById(`source-item-${renameTargetId}`);
+                    if (sourceEl && data.source) {
+                        const updatedSource = { ...(renameTargetSource || {}), ...data.source };
+                        sourceEl.replaceWith(createSourceElement(updatedSource));
                     }
                 } else {
                     const res = await fetch(`/api/notebooks/${renameTargetId}`, {
@@ -1445,7 +1660,10 @@
                 const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${currentTranscriptSourceId}/transcript`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ transcript_text: transcriptText })
+                    body: JSON.stringify({
+                        transcript_text: transcriptText,
+                        llm_provider: currentLlmProvider
+                    })
                 });
                 const data = await res.json();
 
@@ -1519,7 +1737,7 @@
         function stopAnswer() {
             if (!activeQuestionController) return;
             activeQuestionController.abort();
-            fetch('/api/stop-answer/', { method: 'POST' }).catch(() => {});
+            fetch(getLlmProviderUrl('/api/stop-answer/'), { method: 'POST' }).catch(() => {});
         }
 
         function renderSuggestedQuestions(suggestions) {
@@ -1576,11 +1794,8 @@
         const uploadProgressStages = [
             { title: '上傳中', detail: '正在送出音檔到後端。', percent: 8 },
             { title: '語音辨識中', detail: 'Whisper 正在把音訊轉成逐字稿。', percent: 24 },
-            { title: '重新命名中', detail: 'AI 正在根據逐字稿產生音檔名稱。', percent: 36 },
-            { title: '文字切分中', detail: '正在整理逐字稿並切成知識片段。', percent: 50 },
-            { title: '向量化中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 68 },
-            { title: 'AI 摘要中', detail: 'Ollama 正在進行摘要；長音檔會分段深度分析。', percent: 84 },
-            { title: '正在產生問題', detail: 'AI 正在整理推薦問題與摘要索引。', percent: 94 },
+            { title: '文字切分中', detail: '正在整理逐字稿並切成知識片段。', percent: 48 },
+            { title: '向量化中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 76 },
             { title: '完成', detail: '音檔已處理完成。', percent: 100 }
         ];
 
@@ -1870,6 +2085,7 @@
             formData.append('file', file);
             formData.append('notebook_id', currentNotebookId); // 傳送當前筆記本 ID
             formData.append('auto_filename', autoFilename ? 'true' : 'false');
+            formData.append('llm_provider', currentLlmProvider);
             if (options.fallbackFilename) {
                 formData.append('fallback_filename', options.fallbackFilename);
             }
@@ -1893,10 +2109,6 @@
                     }
                     updateSourcesEmptyState();
 
-                    // 顯示 AI 重點摘要
-                    const formattedResult = `**《${source.filename}》重點摘要**\n\n${data.structured_knowledge}`;
-                    appendMessage('AI', formattedResult);
-                    renderSuggestedQuestions(data.suggested_questions || []);
                     return data;
                 } else {
                     const errorMessage = '處理音檔時發生錯誤：' + (data.message || '未知錯誤');
@@ -1921,7 +2133,7 @@
 
             try {
                 await uploadAudioFile(fileInput.files[0], {
-                    autoFilename: true,
+                    autoFilename: false,
                     fallbackFilename: fileInput.files[0].name
                 });
             } finally {
@@ -1960,7 +2172,8 @@
                     signal: controller.signal,
                     body: JSON.stringify({
                         question: question,
-                        notebook_id: currentNotebookId // 傳送當前筆記本 ID
+                        notebook_id: currentNotebookId, // 傳送當前筆記本 ID
+                        llm_provider: currentLlmProvider
                     })
                 });
                 const data = await response.json();

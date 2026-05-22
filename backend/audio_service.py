@@ -6,8 +6,6 @@ import shutil
 import uuid
 from typing import Any, cast
 
-import ollama
-
 from db import (
     delete_notebook_record,
     delete_source_record,
@@ -16,6 +14,7 @@ from db import (
     get_source_analysis_input,
     get_source_audio_info,
     get_source_delete_info,
+    get_source_filename_suggestion_input,
     get_source_filenames,
     insert_ai_summary_message,
     insert_source_record,
@@ -24,13 +23,13 @@ from db import (
     update_source_filename_record,
 )
 from models import (
-    WHISPER_BATCH_SIZE,
     clear_cuda_memory,
+    get_whisper_batch_size,
     get_whisper_model,
     unload_whisper_model,
 )
+from llm_service import generate_text, is_gemini_provider, is_ollama_provider, normalize_llm_provider, stop_llm_generation
 from rag_service import (
-    OLLAMA_LLM_MODEL,
     clear_orphan_chroma_segments,
     build_source_analysis,
     delete_notebook_collection,
@@ -38,6 +37,7 @@ from rag_service import (
     get_chroma_consistency_snapshot,
     index_source_analysis_documents,
     index_source_transcript,
+    should_use_deep_analysis,
     update_source_filename_metadata,
 )
 
@@ -251,6 +251,8 @@ def generate_ai_audio_filename(
     fallback_filename=None,
     current_filename=None,
     analysis=None,
+    llm_provider=None,
+    respect_original_context=True,
 ):
     original_stem = get_filename_stem(fallback_filename)
     is_generic_original = is_generic_filename_stem(original_stem)
@@ -292,17 +294,31 @@ def generate_ai_audio_filename(
 {naming_context}
 """
     try:
-        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
-        title = clean_ai_filename(response["message"]["content"])
+        title = clean_ai_filename(generate_text(prompt, llm_provider))
     except Exception:
         title = ""
 
     if not title:
         return fallback_filename
-    if not is_generic_original and not has_filename_topic_overlap(original_stem, title):
+    if respect_original_context and not is_generic_original and not has_filename_topic_overlap(original_stem, title):
         return fallback_filename
 
     filename = sanitize_filename(title, fallback=os.path.splitext(fallback_filename)[0], extension=extension)
+    return ensure_unique_filename(filename, get_source_filenames(notebook_id), ignore_filename=current_filename)
+
+
+def generate_analysis_title_filename(notebook_id, analysis, extension, fallback_filename, current_filename=None):
+    global_summary = analysis.get("global_summary") if isinstance(analysis, dict) else {}
+    if not isinstance(global_summary, dict):
+        return ""
+
+    title = clean_ai_filename(str(global_summary.get("overall_title") or ""))
+    generic_titles = {"重點摘要", "錄音重點摘要", "目前無法產生整體摘要", "無法判斷"}
+    if not title or title in generic_titles:
+        return ""
+
+    fallback_stem = os.path.splitext(fallback_filename or "audio")[0]
+    filename = sanitize_filename(title, fallback=fallback_stem, extension=extension)
     return ensure_unique_filename(filename, get_source_filenames(notebook_id), ignore_filename=current_filename)
 
 
@@ -356,6 +372,56 @@ def rename_source_filename(notebook_id, source_id, requested_filename):
             "filename": new_filename,
             "updated_at": updated["updated_at"]
         }
+    }
+
+
+def suggest_source_filename(notebook_id, source_id, llm_provider=None):
+    llm_provider = normalize_llm_provider(llm_provider)
+    row = get_source_filename_suggestion_input(notebook_id, source_id)
+    if not row:
+        return {"status": "error", "message": "找不到指定來源。"}
+
+    current_filename, transcript_text, analysis_json = row
+    transcript_text = (transcript_text or "").strip()
+    if not transcript_text:
+        return {"status": "error", "message": "此來源沒有可用逐字稿，無法使用 AI 取檔名。"}
+
+    extension = os.path.splitext(current_filename or "")[1] or ".webm"
+    analysis = None
+    if analysis_json:
+        try:
+            parsed_analysis = json.loads(analysis_json)
+            if isinstance(parsed_analysis, dict):
+                analysis = parsed_analysis
+        except Exception:
+            analysis = None
+
+    suggested_filename = ""
+    if analysis:
+        suggested_filename = generate_analysis_title_filename(
+            notebook_id,
+            analysis,
+            extension,
+            current_filename or "audio",
+            current_filename=current_filename,
+        )
+
+    if not suggested_filename:
+        suggested_filename = generate_ai_audio_filename(
+            notebook_id,
+            transcript_text,
+            extension,
+            fallback_filename=current_filename,
+            current_filename=current_filename,
+            analysis=analysis,
+            llm_provider=llm_provider,
+            respect_original_context=False,
+        )
+
+    stop_local_llm_after_use(llm_provider)
+    return {
+        "status": "success",
+        "filename": suggested_filename,
     }
 
 
@@ -537,12 +603,22 @@ def clear_orphan_chroma_data():
     }
 
 
-def transcribe_audio(file_path):
+def stop_local_llm_after_use(llm_provider=None):
+    if not is_ollama_provider(llm_provider):
+        return
     try:
-        ollama.generate(model=OLLAMA_LLM_MODEL, prompt="", keep_alive=0)
-        clear_cuda_memory()
+        stop_llm_generation("ollama")
     except Exception:
         pass
+
+
+def transcribe_audio(file_path, llm_provider=None):
+    if is_ollama_provider(llm_provider):
+        try:
+            stop_llm_generation("ollama")
+            clear_cuda_memory()
+        except Exception:
+            pass
 
     try:
         whisper_model = get_whisper_model()
@@ -552,7 +628,7 @@ def transcribe_audio(file_path):
             language="zh",
             initial_prompt="這是一段繁體中文的台灣口音逐字稿：",
             vad_filter=True,
-            batch_size=WHISPER_BATCH_SIZE
+            batch_size=get_whisper_batch_size(llm_provider)
         )
         timed_segments = [
             {
@@ -565,11 +641,12 @@ def transcribe_audio(file_path):
         transcript_text = "".join([segment["text"] for segment in timed_segments])
         return transcript_text, timed_segments
     finally:
-        unload_whisper_model()
-        gc.collect()
+        if is_ollama_provider(llm_provider):
+            unload_whisper_model()
+            gc.collect()
 
 
-def generate_summary(transcript_text):
+def generate_summary(transcript_text, llm_provider=None):
     prompt = f"""
         你是一個專業的 AI 知識分析助手。請閱讀以下的口述語音逐字稿，
         進行深入的訊息分析，並給出一份精煉的「整體重點摘要」。
@@ -579,16 +656,21 @@ def generate_summary(transcript_text):
         
         語音逐字稿內容：\n{transcript_text}
         """
-    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
-    return response["message"]["content"]
+    return generate_text(prompt, llm_provider)
 
 
-def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filename=None):
+def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filename=None, llm_provider=None):
+    llm_provider = normalize_llm_provider(llm_provider)
     source_id = str(uuid.uuid4())
     original_ext = os.path.splitext(file.filename or "")[1] or ".webm"
     if auto_filename:
         upload_filename = ensure_unique_filename(
-            sanitize_filename(f"recording-{source_id[:8]}{original_ext}", fallback="recording", extension=original_ext)
+            sanitize_filename(
+                fallback_filename or file.filename or f"recording-{source_id[:8]}{original_ext}",
+                fallback="recording",
+                extension=original_ext
+            ),
+            get_source_filenames(notebook_id)
         )
     else:
         upload_filename = ensure_unique_filename(
@@ -598,72 +680,41 @@ def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filena
     file_path = save_uploaded_audio(file, upload_filename)
 
     try:
-        transcript_text, timed_segments = transcribe_audio(file_path)
+        transcript_text, timed_segments = transcribe_audio(file_path, llm_provider)
     except Exception as e:
         return {"status": "error", "message": f"語音辨識失敗: {str(e)}"}
 
     filename = upload_filename
+    analysis_mode = "deep" if should_use_deep_analysis(transcript_text, timed_segments) else "quick"
     try:
-        analysis = build_source_analysis(filename, transcript_text, timed_segments)
-    except Exception as e:
-        return {"status": "error", "message": f"AI 摘要失敗: {str(e)}"}
-
-    if auto_filename:
-        filename = generate_ai_audio_filename(
-            notebook_id,
-            transcript_text,
-            original_ext,
-            fallback_filename=fallback_filename,
-            current_filename=upload_filename,
-            analysis=analysis
-        )
-        try:
-            file_path = rename_audio_file(file_path, filename)
-        except Exception:
-            filename = upload_filename
-    analysis["filename"] = filename
-
-    analysis_json = json.dumps(
-        {key: value for key, value in analysis.items() if key != "structured_knowledge"},
-        ensure_ascii=False
-    )
-    try:
-        chunks_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments)
-        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis)
+        chunks_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments, llm_provider)
         source_saved_at = insert_source_record(
             notebook_id,
             source_id,
             filename,
             transcript_text,
             json.dumps(timed_segments, ensure_ascii=False),
-            analysis.get("mode"),
-            "completed",
-            analysis_json
+            analysis_mode,
+            "pending",
+            None
         )
     except Exception as e:
+        stop_local_llm_after_use(llm_provider)
         return {"status": "error", "message": f"寫入向量資料庫失敗: {str(e)}"}
     finally:
         gc.collect()
 
-    structured_knowledge = str(analysis.get("structured_knowledge", ""))
-    suggested_questions = cast(list[str], analysis.get("suggested_questions") or [])
-    saved_suggested_questions = []
-
-    try:
-        insert_ai_summary_message(notebook_id, filename, structured_knowledge)
-        saved_suggested_questions = save_suggested_questions(notebook_id, filename, suggested_questions)
-    except Exception:
-        pass
+    stop_local_llm_after_use(llm_provider)
 
     return {
         "filename": filename,
         "status": "success",
-        "message": f"✅ 成功存入 {chunks_count} 個原文片段與 {analysis_chunk_count} 個摘要片段。",
+        "message": f"音檔已上傳並建立 {chunks_count} 個逐字稿索引片段。",
         "raw_transcript": transcript_text,
-        "structured_knowledge": structured_knowledge,
-        "suggested_questions": saved_suggested_questions,
-        "analysis_mode": analysis.get("mode"),
-        "analysis_status": "completed",
+        "structured_knowledge": "",
+        "suggested_questions": [],
+        "analysis_mode": analysis_mode,
+        "analysis_status": "pending",
         "source": {
             "id": source_id,
             "filename": filename,
@@ -671,14 +722,14 @@ def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filena
             "has_transcript": True,
             "transcript_updated_at": source_saved_at,
             "indexed_at": source_saved_at,
-            "analysis_mode": analysis.get("mode"),
-            "analysis_status": "completed",
+            "analysis_mode": analysis_mode,
+            "analysis_status": "pending",
             "analysis_updated_at": source_saved_at
         }
     }
 
-
-def reanalyze_source_data(notebook_id, source_id):
+def reanalyze_source_data(notebook_id, source_id, llm_provider=None):
+    llm_provider = normalize_llm_provider(llm_provider)
     row = get_source_analysis_input(notebook_id, source_id)
     if not row:
         return {"status": "error", "message": "找不到指定來源。"}
@@ -690,8 +741,8 @@ def reanalyze_source_data(notebook_id, source_id):
 
     try:
         timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
-        analysis = build_source_analysis(filename, transcript_text, timed_segments)
-        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis)
+        analysis = build_source_analysis(filename, transcript_text, timed_segments, llm_provider)
+        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis, llm_provider)
         analysis_json = json.dumps(
             {key: value for key, value in analysis.items() if key != "structured_knowledge"},
             ensure_ascii=False
@@ -709,11 +760,13 @@ def reanalyze_source_data(notebook_id, source_id):
             cast(list[str], analysis.get("suggested_questions") or [])
         )
         insert_ai_summary_message(notebook_id, filename, str(analysis.get("structured_knowledge", "")))
+        stop_local_llm_after_use(llm_provider)
     except Exception as e:
         try:
             update_source_analysis_record(notebook_id, source_id, None, "failed", "")
         except Exception:
             pass
+        stop_local_llm_after_use(llm_provider)
         return {"status": "error", "message": f"重新深度分析失敗: {str(e)}"}
 
     return {

@@ -3,13 +3,13 @@ import os
 import re
 import sqlite3
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable
 from typing import Any, cast
 
 import chromadb
 import jieba
 import numpy as np
-import ollama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Okapi
 
@@ -21,13 +21,14 @@ from db import (
     update_source_transcript_record,
 )
 from models import (
-    EMBEDDING_BATCH_SIZE,
-    RERANKER_BATCH_SIZE,
     clear_cuda_memory,
+    get_embedding_batch_size,
     get_embeddings_model,
     get_reranker,
+    get_reranker_batch_size,
     unload_whisper_model,
 )
+from llm_service import generate_text, is_gemini_provider, is_ollama_provider, normalize_llm_provider, stop_llm_generation
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +37,6 @@ chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
 
 Metadata = dict[str, Any]
-OLLAMA_LLM_MODEL = "qwen3.5:9b-q4_K_M"
 REFERENCE_MAX_COUNT = 2
 REFERENCE_SCORE_MARGIN = 1.25
 REFERENCE_MIN_QUESTION_OVERLAP_SCORE = 1.3
@@ -63,7 +63,15 @@ ANSWER_CONTEXT_SCORE_MARGIN = 1.0
 ANSWERABILITY_STRONG_BEST_OVERLAP = 3.5
 ANSWERABILITY_STRONG_TOTAL_OVERLAP = 6.5
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 ANALYSIS_VERSION = "1.0"
+GEMINI_CHAPTER_CONCURRENCY = _int_env("VOICERAG_GEMINI_CHAPTER_CONCURRENCY", 3)
 LONG_AUDIO_SECONDS = 10 * 60
 LONG_TRANSCRIPT_CHARS = 5000
 CHAPTER_TARGET_SECONDS = 4 * 60
@@ -124,21 +132,18 @@ def is_no_answer_response(answer: str) -> bool:
     return any(phrase in compact_answer for phrase in NO_ANSWER_PHRASES)
 
 
-def stop_ollama_model() -> dict[str, Any]:
-    """嘗試立即卸載目前 LLM，作為停止回答的簡單版後端中止機制。"""
+def stop_ollama_model(llm_provider: str | None = None) -> dict[str, Any]:
+    """相容舊名稱；實際依目前 LLM provider 決定是否需要停止本地模型。"""
+    return stop_llm_generation(llm_provider)
+
+
+def stop_local_llm_after_use(llm_provider: str | None = None) -> None:
+    if not is_ollama_provider(llm_provider):
+        return
     try:
-        ollama.generate(model=OLLAMA_LLM_MODEL, prompt="", keep_alive=0)
-        return {
-            "status": "success",
-            "message": "已送出停止 Ollama 模型的請求。",
-            "model": OLLAMA_LLM_MODEL
-        }
-    except Exception as error:
-        return {
-            "status": "error",
-            "message": f"停止 Ollama 模型失敗：{error}",
-            "model": OLLAMA_LLM_MODEL
-        }
+        stop_llm_generation("ollama")
+    except Exception:
+        pass
 
 
 def normalize_text_list(value: Any, limit: int | None = None) -> list[str]:
@@ -204,7 +209,11 @@ def should_use_deep_analysis(transcript_text: str, timed_segments: list[dict[str
     )
 
 
-def build_chapter_inputs(transcript_text: str, timed_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_chapter_inputs(
+    transcript_text: str,
+    timed_segments: list[dict[str, Any]],
+    llm_provider: str | None = None,
+) -> list[dict[str, Any]]:
     if timed_segments:
         chapters: list[dict[str, Any]] = []
         current_segments: list[dict[str, Any]] = []
@@ -260,7 +269,13 @@ def build_chapter_inputs(transcript_text: str, timed_segments: list[dict[str, An
         if chapters:
             return chapters
 
-    chunks = semantic_chunk(transcript_text, similarity_threshold=0.62, max_chunk_size=3500, min_chunk_size=600)
+    chunks = semantic_chunk(
+        transcript_text,
+        similarity_threshold=0.62,
+        max_chunk_size=3500,
+        min_chunk_size=600,
+        llm_provider=llm_provider,
+    )
     return [
         {
             "index": index,
@@ -273,7 +288,7 @@ def build_chapter_inputs(transcript_text: str, timed_segments: list[dict[str, An
     ]
 
 
-def generate_short_summary(transcript_text: str) -> str:
+def generate_short_summary(transcript_text: str, llm_provider: str | None = None) -> str:
     prompt = f"""
 你是一個專業的 AI 知識分析助手。請閱讀以下的口述語音逐字稿，
 進行深入的訊息分析，並給出一份精煉的「整體重點摘要」。
@@ -293,11 +308,39 @@ def generate_short_summary(transcript_text: str) -> str:
 語音逐字稿內容：
 {transcript_text}
 """
-    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
-    return response["message"]["content"]
+    return generate_text(prompt, llm_provider)
 
 
-def analyze_chapter_with_llm(chapter: dict[str, Any]) -> dict[str, Any]:
+def generate_quick_analysis_with_llm(transcript_text: str, llm_provider: str | None = None) -> dict[str, Any]:
+    prompt = f"""
+你是一個專業的 AI 知識分析助手。請閱讀以下口述語音逐字稿，產生快速知識整理，並只輸出 JSON 物件。
+
+JSON 欄位固定如下：
+{{
+  "overall_title": "整份錄音標題，12 字以內",
+  "overview": "整體重點摘要，使用繁體中文，3 到 5 句",
+  "suggested_questions": ["推薦問題一？", "推薦問題二？", "推薦問題三？"]
+}}
+
+規則：
+1. 必須使用繁體中文。
+2. 不要輸出 Markdown，不要輸出 JSON 以外的文字。
+3. 摘要要能幫助使用者快速掌握整段語音的精華。
+4. 推薦問題最多 3 題；如果內容太短或資訊不足，suggested_questions 請輸出空陣列。
+
+語音逐字稿內容：
+{transcript_text}
+"""
+    response_text = generate_text(prompt, llm_provider)
+    parsed = extract_json_object(response_text)
+    return {
+        "overall_title": str(parsed.get("overall_title") or "重點摘要").strip(),
+        "overview": str(parsed.get("overview") or response_text).strip(),
+        "suggested_questions": normalize_text_list(parsed.get("suggested_questions"), limit=3),
+    }
+
+
+def analyze_chapter_with_llm(chapter: dict[str, Any], llm_provider: str | None = None) -> dict[str, Any]:
     prompt = f"""
 你是一個專業的長音檔知識整理助手。請分析下方這一段逐字稿，並只輸出 JSON 物件。
 
@@ -319,10 +362,10 @@ JSON 欄位固定如下：
 逐字稿：
 {chapter["text"]}
 """
-    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
-    parsed = extract_json_object(response["message"]["content"])
+    response_text = generate_text(prompt, llm_provider)
+    parsed = extract_json_object(response_text)
     title = str(parsed.get("title") or f"第 {chapter['index']} 段重點").strip()
-    summary = str(parsed.get("summary") or response["message"]["content"]).strip()
+    summary = str(parsed.get("summary") or response_text).strip()
     return {
         "index": chapter["index"],
         "title": title[:40],
@@ -336,7 +379,22 @@ JSON 欄位固定如下：
     }
 
 
-def generate_global_analysis(chapters: list[dict[str, Any]]) -> dict[str, Any]:
+def analyze_chapters_with_limited_concurrency(
+    chapter_inputs: list[dict[str, Any]],
+    llm_provider: str | None = None,
+) -> list[dict[str, Any]]:
+    if not is_gemini_provider(llm_provider) or len(chapter_inputs) <= 1:
+        return [analyze_chapter_with_llm(chapter, llm_provider) for chapter in chapter_inputs]
+
+    max_workers = min(GEMINI_CHAPTER_CONCURRENCY, len(chapter_inputs))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(
+            lambda chapter: analyze_chapter_with_llm(chapter, llm_provider),
+            chapter_inputs,
+        ))
+
+
+def generate_global_analysis(chapters: list[dict[str, Any]], llm_provider: str | None = None) -> dict[str, Any]:
     chapter_payload = [
         {
             "index": chapter["index"],
@@ -370,11 +428,11 @@ JSON 欄位固定如下：
 段落分析結果：
 {json.dumps(chapter_payload, ensure_ascii=False)}
 """
-    response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
-    parsed = extract_json_object(response["message"]["content"])
+    response_text = generate_text(prompt, llm_provider)
+    parsed = extract_json_object(response_text)
     return {
         "overall_title": str(parsed.get("overall_title") or "錄音重點摘要").strip(),
-        "overview": str(parsed.get("overview") or response["message"]["content"]).strip(),
+        "overview": str(parsed.get("overview") or response_text).strip(),
         "core_themes": normalize_text_list(parsed.get("core_themes"), limit=5),
         "deep_insights": normalize_text_list(parsed.get("deep_insights"), limit=5),
         "important_details": normalize_text_list(parsed.get("important_details"), limit=6),
@@ -391,13 +449,26 @@ def format_analysis_summary(analysis: dict[str, Any]) -> str:
     return str(global_summary.get("overall_title") or "目前無法產生整體摘要。").strip()
 
 
-def build_source_analysis(filename: str, transcript_text: str, timed_segments: list[dict[str, Any]]) -> dict[str, Any]:
+def build_source_analysis(
+    filename: str,
+    transcript_text: str,
+    timed_segments: list[dict[str, Any]],
+    llm_provider: str | None = None,
+) -> dict[str, Any]:
+    llm_provider = normalize_llm_provider(llm_provider)
     mode = "deep" if should_use_deep_analysis(transcript_text, timed_segments) else "quick"
     duration_seconds = get_transcript_duration(timed_segments)
 
     if mode == "quick":
-        summary = generate_short_summary(transcript_text)
-        suggested_questions = generate_suggested_questions(transcript_text)
+        if is_gemini_provider(llm_provider):
+            quick_analysis = generate_quick_analysis_with_llm(transcript_text, llm_provider)
+            summary = str(quick_analysis.get("overview") or "").strip()
+            suggested_questions = normalize_text_list(quick_analysis.get("suggested_questions"), limit=3)
+            overall_title = str(quick_analysis.get("overall_title") or "重點摘要").strip()
+        else:
+            summary = generate_short_summary(transcript_text, llm_provider)
+            suggested_questions = generate_suggested_questions(transcript_text, llm_provider)
+            overall_title = "重點摘要"
         analysis = {
             "version": ANALYSIS_VERSION,
             "mode": "quick",
@@ -405,7 +476,7 @@ def build_source_analysis(filename: str, transcript_text: str, timed_segments: l
             "duration_seconds": duration_seconds,
             "chapters": [],
             "global_summary": {
-                "overall_title": "重點摘要",
+                "overall_title": overall_title,
                 "overview": summary,
                 "core_themes": [],
                 "deep_insights": [],
@@ -417,9 +488,9 @@ def build_source_analysis(filename: str, transcript_text: str, timed_segments: l
         analysis["structured_knowledge"] = format_analysis_summary(analysis)
         return analysis
 
-    chapter_inputs = build_chapter_inputs(transcript_text, timed_segments)
-    chapters = [analyze_chapter_with_llm(chapter) for chapter in chapter_inputs]
-    global_summary = generate_global_analysis(chapters)
+    chapter_inputs = build_chapter_inputs(transcript_text, timed_segments, llm_provider)
+    chapters = analyze_chapters_with_limited_concurrency(chapter_inputs, llm_provider)
+    global_summary = generate_global_analysis(chapters, llm_provider)
     suggested_questions = normalize_text_list(global_summary.get("suggested_questions"), limit=3)
     if not suggested_questions:
         suggested_questions = normalize_text_list(
@@ -751,6 +822,7 @@ def filter_relevant_references(
     question: str,
     answer: str,
     candidates: list[dict[str, Any]],
+    llm_provider: str | None = None,
     limit: int = REFERENCE_MAX_COUNT
 ) -> list[dict[str, Any]]:
     """只保留真正支撐問題與答案的來源，避免把次相關檢索結果列給使用者。"""
@@ -797,7 +869,7 @@ def filter_relevant_references(
     pairs: list[tuple[str, str]] = [(reference_query, item["doc"]) for item in prepared_candidates]
     try:
         semantic_scores = normalize_reranker_scores(
-            get_reranker().predict(cast(Any, pairs), batch_size=RERANKER_BATCH_SIZE)
+            get_reranker().predict(cast(Any, pairs), batch_size=get_reranker_batch_size(llm_provider))
         )
     except Exception:
         semantic_scores = [
@@ -831,14 +903,23 @@ def filter_relevant_references(
     return [reference for _, reference in ranked_references[:limit]]
 
 
-def semantic_chunk(text, similarity_threshold=0.65, max_chunk_size=600, min_chunk_size=80):
+def semantic_chunk(
+    text,
+    similarity_threshold=0.65,
+    max_chunk_size=600,
+    min_chunk_size=80,
+    llm_provider: str | None = None,
+):
     """基於語意相似度的智慧切分。"""
     sentences = split_sentences(text)
 
     if len(sentences) <= 2:
         return [text] if text.strip() else []
 
-    sentence_embeddings = get_embeddings_model().encode(sentences, batch_size=EMBEDDING_BATCH_SIZE)
+    sentence_embeddings = get_embeddings_model().encode(
+        sentences,
+        batch_size=get_embedding_batch_size(llm_provider),
+    )
 
     similarities = []
     for i in range(len(sentence_embeddings) - 1):
@@ -955,14 +1036,15 @@ def build_chunk_metadata(chunks, timed_segments, source_filename, source_id=None
     return metadata_list
 
 
-def chunk_transcript_text(transcript_text):
+def chunk_transcript_text(transcript_text, llm_provider: str | None = None):
     """依目前 RAG 規則切分逐字稿，供上傳與重新索引共用"""
     if len(transcript_text) > 200:
         return semantic_chunk(
             transcript_text,
             similarity_threshold=0.65,
             max_chunk_size=600,
-            min_chunk_size=80
+            min_chunk_size=80,
+            llm_provider=llm_provider,
         )
 
     text_splitter = RecursiveCharacterTextSplitter(
@@ -1129,7 +1211,7 @@ def build_chapter_summary_document(chapter: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part.strip())
 
 
-def index_source_analysis_documents(notebook_id, source_id, filename, analysis):
+def index_source_analysis_documents(notebook_id, source_id, filename, analysis, llm_provider: str | None = None):
     collection = get_notebook_collection(notebook_id)
     delete_source_analysis_chunks(collection, source_id)
 
@@ -1179,48 +1261,46 @@ def index_source_analysis_documents(notebook_id, source_id, filename, analysis):
         rebuild_bm25_index(notebook_id)
         return 0
 
-    vectors = [
-        get_embeddings_model().encode(document, batch_size=EMBEDDING_BATCH_SIZE).tolist()
-        for document in documents
-    ]
-    for doc_id, vector, document, metadata in zip(ids, vectors, documents, metadatas):
-        collection.add(
-            ids=[doc_id],
-            embeddings=[vector],
-            documents=[document],
-            metadatas=[metadata]
-        )
+    vectors = get_embeddings_model().encode(
+        documents,
+        batch_size=get_embedding_batch_size(llm_provider),
+    ).tolist()
+    collection.add(
+        ids=ids,
+        embeddings=vectors,
+        documents=documents,
+        metadatas=metadatas,
+    )
 
     rebuild_bm25_index(notebook_id)
     return len(documents)
 
 
-def index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments):
+def index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments, llm_provider: str | None = None):
     """將單一來源逐字稿重新切分、向量化並寫回 ChromaDB"""
     transcript_text = transcript_text.strip()
     if not transcript_text:
         raise ValueError("逐字稿不可為空")
 
-    chunks = chunk_transcript_text(transcript_text)
+    chunks = chunk_transcript_text(transcript_text, llm_provider)
     if not chunks:
         raise ValueError("逐字稿內容不足，無法建立索引")
 
     chunk_metadatas = build_chunk_metadata(chunks, timed_segments, filename, source_id)
-    vectors = [
-        get_embeddings_model().encode(chunk, batch_size=EMBEDDING_BATCH_SIZE).tolist()
-        for chunk in chunks
-    ]
+    vectors = get_embeddings_model().encode(
+        chunks,
+        batch_size=get_embedding_batch_size(llm_provider),
+    ).tolist()
 
     collection = get_notebook_collection(notebook_id)
     delete_source_chunks(collection, source_id)
-    for i, chunk in enumerate(chunks):
-        chunk_id = f"{source_id}_chunk_{i}_{uuid.uuid4().hex[:6]}"
-        collection.add(
-            ids=[chunk_id],
-            embeddings=[vectors[i]],
-            documents=[chunk],
-            metadatas=[chunk_metadatas[i]]
-        )
+    chunk_ids = [f"{source_id}_chunk_{i}_{uuid.uuid4().hex[:6]}" for i in range(len(chunks))]
+    collection.add(
+        ids=chunk_ids,
+        embeddings=vectors,
+        documents=chunks,
+        metadatas=chunk_metadatas,
+    )
 
     rebuild_bm25_index(notebook_id)
     return len(chunks)
@@ -1326,7 +1406,7 @@ def parse_suggested_questions(raw_text, limit):
     return unique_questions
 
 
-def generate_suggested_questions(transcript_text):
+def generate_suggested_questions(transcript_text, llm_provider: str | None = None):
     """根據逐字稿產生推薦問題。失敗時回傳空清單，不中斷上傳流程。"""
     prompt = f"""
 你是一個專業的知識庫問題設計助手。
@@ -1348,8 +1428,7 @@ def generate_suggested_questions(transcript_text):
 {transcript_text}
 """
     try:
-        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
-        raw_questions = response["message"]["content"]
+        raw_questions = generate_text(prompt, llm_provider)
         return parse_suggested_questions(raw_questions, 3)
     except Exception:
         return []
@@ -1470,8 +1549,13 @@ def get_answerability_evidence_signal(question: str, ranked: list[tuple[float, s
     }
 
 
-def judge_answerability(question: str, retrieved_context: str, history_text: str = "") -> dict[str, Any]:
-    """用本地 LLM 先判斷資料是否足以回答，避免弱相關片段造成幻覺。"""
+def judge_answerability(
+    question: str,
+    retrieved_context: str,
+    history_text: str = "",
+    llm_provider: str | None = None,
+) -> dict[str, Any]:
+    """用目前選擇的 LLM 先判斷資料是否足以回答，避免弱相關片段造成幻覺。"""
     if not retrieved_context.strip():
         return {
             "answerable": False,
@@ -1513,8 +1597,8 @@ def judge_answerability(question: str, retrieved_context: str, history_text: str
 {question}
 """
     try:
-        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": prompt + "\n/no_think"}])
-        parsed = extract_json_object(response["message"]["content"])
+        response_text = generate_text(prompt, llm_provider)
+        parsed = extract_json_object(response_text)
     except Exception:
         return {
             "answerable": False,
@@ -1537,11 +1621,82 @@ def judge_answerability(question: str, retrieved_context: str, history_text: str
     }
 
 
+def generate_gemini_rag_answer(
+    question: str,
+    retrieved_context: str,
+    history_text: str = "",
+    llm_provider: str | None = None,
+) -> dict[str, Any]:
+    history_section = ""
+    if history_text:
+        history_section = f"""
+【歷史對話】
+{history_text}
+
+注意：歷史對話只能用來理解代名詞或追問脈絡，不能當作回答證據。"""
+
+    prompt = f"""你現在是一個嚴格且專業的「知識庫檢索助理」。請同時完成可答性判斷與回答生成，並只輸出 JSON 物件。
+
+JSON 欄位固定如下：
+{{
+  "answerable": true,
+  "confidence": "high",
+  "answer": "使用繁體中文寫出答案；如果無法回答，固定填入：{NO_ANSWER_MESSAGE}",
+  "reason": "一句話說明可答性判斷"
+}}
+
+規則：
+1. 必須完全且只能依據【參考資料】作答。
+2. 如果【參考資料】直接支持答案，answerable 請設為 true，answer 請用條理清晰的方式回答。
+3. 如果【參考資料】無法回答問題，answerable 必須是 false，answer 必須是「{NO_ANSWER_MESSAGE}」。
+4. 禁止根據常識、影片標題、相似主題、外部知識或背景知識延伸回答。
+5. answer 正文不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
+6. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
+7. 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
+8. 若參考資料同時包含「全局摘要」、「章節摘要」與「原文片段」，回答整體主題、摘要、潤色或深度解析問題時，請優先使用全局摘要與章節摘要，再用原文片段補細節。
+9. confidence 只能是 high、medium、low。
+10. 只能輸出 JSON，不要輸出 Markdown、解釋文字或其他內容。
+{history_section}
+
+【參考資料】
+{retrieved_context}
+
+【使用者問題】
+{question}
+"""
+    response_text = generate_text(prompt, llm_provider)
+    parsed = extract_json_object(response_text)
+    if not parsed:
+        answer = strip_model_source_mentions(response_text).strip()
+        return {
+            "answerable": bool(answer) and not is_no_answer_response(answer),
+            "confidence": "medium",
+            "answer": answer or NO_ANSWER_MESSAGE,
+            "reason": "gemini_json_parse_failed",
+        }
+
+    answerable = parse_answerable_value(parsed.get("answerable"))
+    answer = strip_model_source_mentions(str(parsed.get("answer") or "").strip())
+    if not answerable:
+        answer = NO_ANSWER_MESSAGE
+    elif not answer:
+        answerable = False
+        answer = NO_ANSWER_MESSAGE
+
+    return {
+        "answerable": answerable,
+        "confidence": normalize_confidence(parsed.get("confidence"), default="medium" if answerable else "low"),
+        "answer": answer,
+        "reason": str(parsed.get("reason") or "").strip(),
+    }
+
+
 class SourceNotFoundError(Exception):
     pass
 
 
-def update_source_transcript(notebook_id, source_id, transcript_text):
+def update_source_transcript(notebook_id, source_id, transcript_text, llm_provider: str | None = None):
+    llm_provider = normalize_llm_provider(llm_provider)
     transcript_text = transcript_text.strip()
     if not transcript_text:
         return {"status": "error", "message": "逐字稿不可為空。"}
@@ -1569,10 +1724,11 @@ def update_source_transcript(notebook_id, source_id, transcript_text):
 
     try:
         timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
-        analysis = build_source_analysis(filename, transcript_text, timed_segments)
-        chunk_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments)
-        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis)
+        analysis = build_source_analysis(filename, transcript_text, timed_segments, llm_provider)
+        chunk_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments, llm_provider)
+        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis, llm_provider)
     except Exception as e:
+        stop_local_llm_after_use(llm_provider)
         return {"status": "error", "message": f"重新索引失敗: {str(e)}"}
 
     analysis_json = json.dumps(
@@ -1591,6 +1747,8 @@ def update_source_transcript(notebook_id, source_id, transcript_text):
         save_suggested_questions(notebook_id, filename, analysis.get("suggested_questions", []))
     except Exception:
         pass
+
+    stop_local_llm_after_use(llm_provider)
 
     return {
         "status": "success",
@@ -1613,13 +1771,15 @@ def update_source_transcript(notebook_id, source_id, transcript_text):
     }
 
 
-def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
-    ollama_was_used = False
+def answer_question(notebook_id: str, question: str, llm_provider: str | None = None) -> dict[str, Any]:
+    llm_provider = normalize_llm_provider(llm_provider)
+    llm_was_used = False
     try:
-        unload_whisper_model()
+        if is_ollama_provider(llm_provider):
+            unload_whisper_model()
         query_vector = cast(
             list[float],
-            get_embeddings_model().encode(question, batch_size=EMBEDDING_BATCH_SIZE).tolist(),
+            get_embeddings_model().encode(question, batch_size=get_embedding_batch_size(llm_provider)).tolist(),
         )
 
         collection = get_notebook_collection(notebook_id)
@@ -1677,7 +1837,7 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         if not pairs:
             return {"status": "error", "message": "目前知識庫沒有可用的文字片段，請重新上傳或重新分析來源。"}
 
-        raw_scores = get_reranker().predict(cast(Any, pairs), batch_size=RERANKER_BATCH_SIZE)
+        raw_scores = get_reranker().predict(cast(Any, pairs), batch_size=get_reranker_batch_size(llm_provider))
         scores = normalize_reranker_scores(raw_scores)
 
         ranked = select_answer_contexts(sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True))
@@ -1712,8 +1872,36 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
             history_text = "\n".join(history_lines)
 
         evidence_signal = get_answerability_evidence_signal(question, ranked)
-        ollama_was_used = True
-        answerability = judge_answerability(question, retrieved_context, history_text)
+        if is_gemini_provider(llm_provider):
+            llm_was_used = True
+            gemini_result = generate_gemini_rag_answer(question, retrieved_context, history_text, llm_provider)
+            answerable = bool(gemini_result["answerable"])
+            ai_answer = str(gemini_result["answer"])
+            if not answerable and evidence_signal["strong_evidence"] and not is_no_answer_response(ai_answer):
+                answerable = True
+
+            references = filter_relevant_references(question, ai_answer, reference_candidates, llm_provider) if answerable else []
+            source_files = list(dict.fromkeys(reference["source"] for reference in references))
+
+            try:
+                append_qa_messages(notebook_id, question, ai_answer, references)
+            except Exception:
+                pass
+
+            return {
+                "status": "success",
+                "question": question,
+                "answer": ai_answer,
+                "reference_sources": top_documents if answerable else [],
+                "source_files": source_files,
+                "references": references,
+                "answerable": answerable,
+                "confidence": str(gemini_result["confidence"]),
+                "refusal_reason": "" if answerable else (str(gemini_result.get("reason") or "") or "no_relevant_evidence")
+            }
+
+        llm_was_used = True
+        answerability = judge_answerability(question, retrieved_context, history_text, llm_provider)
         if not answerability["answerable"] and evidence_signal["strong_evidence"]:
             answerability = {
                 "answerable": True,
@@ -1760,11 +1948,10 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
         rag_prompt += f"\n\n【參考資料】：\n{retrieved_context}"
         rag_prompt += f"\n\n【使用者的問題】：\n{question}"
 
-        ollama_was_used = True
-        response = ollama.chat(model=OLLAMA_LLM_MODEL, messages=[{"role": "user", "content": rag_prompt + "\n/no_think"}])
-        ai_answer = strip_model_source_mentions(response["message"]["content"])
+        llm_was_used = True
+        ai_answer = strip_model_source_mentions(generate_text(rag_prompt, llm_provider))
         answerable = not is_no_answer_response(ai_answer)
-        references = filter_relevant_references(question, ai_answer, reference_candidates) if answerable else []
+        references = filter_relevant_references(question, ai_answer, reference_candidates, llm_provider) if answerable else []
         source_files = list(dict.fromkeys(reference["source"] for reference in references))
 
         try:
@@ -1787,6 +1974,7 @@ def answer_question(notebook_id: str, question: str) -> dict[str, Any]:
     except Exception as e:
         return {"status": "error", "message": f"問答過程發生錯誤: {str(e)}"}
     finally:
-        if ollama_was_used:
-            stop_ollama_model()
-        clear_cuda_memory()
+        if llm_was_used and is_ollama_provider(llm_provider):
+            stop_llm_generation(llm_provider)
+        if is_ollama_provider(llm_provider):
+            clear_cuda_memory()

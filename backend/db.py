@@ -300,6 +300,22 @@ def get_source_analysis_input(notebook_id, source_id):
     return row
 
 
+def get_source_filename_suggestion_input(notebook_id, source_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT filename, transcript_text, analysis_json
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
 def get_source_audio_info(notebook_id, source_id):
     conn = get_connection()
     cursor = conn.cursor()

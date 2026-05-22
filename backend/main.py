@@ -20,6 +20,8 @@ from db import (
     update_notebook_name,
 )
 from schemas import NotebookUpdate, QuestionRequest, SourceFilenameUpdate, TranscriptUpdateRequest
+from models import preload_models_for_provider
+from llm_service import get_default_llm_provider, normalize_llm_provider
 
 
 app = FastAPI()
@@ -33,6 +35,11 @@ async def serve_frontend():
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
+@app.on_event("startup")
+async def preload_models_on_startup():
+    preload_models_for_provider(get_default_llm_provider())
+
+
 init_db()
 
 from audio_service import (
@@ -44,12 +51,13 @@ from audio_service import (
     process_audio_upload,
     reanalyze_source_data,
     rename_source_filename,
+    suggest_source_filename,
 )
+from llm_service import get_llm_provider_config, stop_llm_generation
 from rag_service import (
     SourceNotFoundError,
     answer_question,
     get_notebook_collection,
-    stop_ollama_model,
     update_source_transcript,
 )
 
@@ -57,6 +65,18 @@ from rag_service import (
 @app.get("/api/notebooks/")
 async def get_notebooks():
     return {"status": "success", "notebooks": get_notebooks_data()}
+
+
+@app.get("/api/llm-providers/")
+async def get_llm_providers():
+    return get_llm_provider_config()
+
+
+@app.post("/api/llm-providers/preload")
+async def preload_llm_provider(llm_provider: str | None = None):
+    provider = normalize_llm_provider(llm_provider)
+    preload_models_for_provider(provider)
+    return {"status": "success", "provider": provider}
 
 
 @app.post("/api/notebooks/")
@@ -100,7 +120,7 @@ async def get_source_transcript(notebook_id: str, source_id: str):
 @app.put("/api/notebooks/{notebook_id}/sources/{source_id}/transcript")
 async def update_source_transcript_endpoint(notebook_id: str, source_id: str, request: TranscriptUpdateRequest):
     try:
-        return update_source_transcript(notebook_id, source_id, request.transcript_text)
+        return update_source_transcript(notebook_id, source_id, request.transcript_text, request.llm_provider)
     except SourceNotFoundError:
         raise HTTPException(status_code=404, detail="找不到指定來源")
 
@@ -129,9 +149,19 @@ async def update_source_filename(notebook_id: str, source_id: str, request: Sour
     return result
 
 
+@app.post("/api/notebooks/{notebook_id}/sources/{source_id}/filename/suggest")
+async def suggest_source_filename_endpoint(notebook_id: str, source_id: str, llm_provider: str | None = None):
+    result = suggest_source_filename(notebook_id, source_id, llm_provider)
+    if result.get("status") != "success":
+        message = result.get("message", "AI 取檔名失敗")
+        status_code = 404 if "找不到" in message else 500
+        raise HTTPException(status_code=status_code, detail=message)
+    return result
+
+
 @app.post("/api/notebooks/{notebook_id}/sources/{source_id}/reanalyze")
-async def reanalyze_source(notebook_id: str, source_id: str):
-    result = reanalyze_source_data(notebook_id, source_id)
+async def reanalyze_source(notebook_id: str, source_id: str, llm_provider: str | None = None):
+    result = reanalyze_source_data(notebook_id, source_id, llm_provider)
     if result.get("status") != "success":
         message = result.get("message", "重新分析失敗")
         status_code = 404 if "找不到" in message else 500
@@ -165,19 +195,20 @@ async def upload_audio(
     notebook_id: str = Form(...),
     file: UploadFile = File(...),
     auto_filename: bool = Form(False),
-    fallback_filename: str | None = Form(None)
+    fallback_filename: str | None = Form(None),
+    llm_provider: str | None = Form(None)
 ):
-    return process_audio_upload(notebook_id, file, auto_filename, fallback_filename)
+    return process_audio_upload(notebook_id, file, auto_filename, fallback_filename, llm_provider)
 
 
 @app.post("/ask-question/")
 async def ask_question(request: QuestionRequest):
-    return answer_question(request.notebook_id, request.question)
+    return answer_question(request.notebook_id, request.question, request.llm_provider)
 
 
 @app.post("/api/stop-answer/")
-async def stop_answer():
-    result = stop_ollama_model()
+async def stop_answer(llm_provider: str | None = None):
+    result = stop_llm_generation(llm_provider)
     if result.get("status") != "success":
         raise HTTPException(status_code=500, detail=result.get("message", "停止回答失敗"))
     return result

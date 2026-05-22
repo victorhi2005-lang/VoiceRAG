@@ -7,6 +7,7 @@ class NotebookUpdate(BaseModel):
 
 class TranscriptUpdateRequest(BaseModel):
     transcript_text: str
+    llm_provider: str | None = None
 
 
 class SourceFilenameUpdate(BaseModel):
@@ -16,3 +17,4 @@ class SourceFilenameUpdate(BaseModel):
 class QuestionRequest(BaseModel):
     notebook_id: str
     question: str
+    llm_provider: str | None = None
