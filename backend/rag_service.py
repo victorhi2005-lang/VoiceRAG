@@ -63,6 +63,105 @@ ANSWER_CONTEXT_SCORE_MARGIN = 1.0
 ANSWERABILITY_STRONG_BEST_OVERLAP = 3.5
 ANSWERABILITY_STRONG_TOTAL_OVERLAP = 6.5
 
+
+def build_history_context_section(history_text: str) -> str:
+    """建立歷史對話區塊；歷史只用來理解追問，不可當作回答證據。"""
+    if not history_text:
+        return ""
+    return f"""【歷史對話】
+{history_text}
+
+注意：歷史對話只能用來理解代名詞或追問脈絡，不能當作回答證據。"""
+
+
+def build_rag_context_sections(question: str, retrieved_context: str, history_text: str = "") -> str:
+    """建立所有 RAG provider 共用的資料區塊。"""
+    sections = []
+    history_section = build_history_context_section(history_text)
+    if history_section:
+        sections.append(history_section)
+    sections.append(f"""【參考資料】
+{retrieved_context}""")
+    sections.append(f"""【使用者問題】
+{question}""")
+    return "\n\n".join(sections)
+
+
+def build_shared_rag_answer_rules() -> str:
+    """本地 AI 與 Gemini 共用的 RAG 回答規則。"""
+    return f"""- 【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字。
+- 必須完全且只能依據【參考資料】作答。
+- 如果【參考資料】直接支持答案，請用條理清晰、分點說明的方式回答。
+- 如果【參考資料】無法回答問題，請誠實回答：「{NO_ANSWER_MESSAGE}」，絕對不可以編造答案。
+- 禁止根據常識、影片標題、相似主題、外部知識或你的背景知識延伸回答。
+- 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
+- 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
+- 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
+- 若有【歷史對話】，只能用來理解追問脈絡，不能把歷史對話當作新的事實來源。
+- 若參考資料同時包含「全局摘要」、「章節摘要」與「原文片段」，回答整體主題、摘要、潤色或深度解析問題時，請優先使用全局摘要與章節摘要，再用原文片段補細節。"""
+
+
+def build_answerability_prompt(question: str, retrieved_context: str, history_text: str = "") -> str:
+    """建立可答性判斷 prompt，專門判斷資料是否足以支撐回答。"""
+    return f"""你是一個 RAG 可答性判斷器，只負責判斷「參考資料是否足以支撐回答使用者問題」，不要真的回答問題。
+
+判斷規則：
+1. 如果參考資料提供了問題的核心主題、相關事實、摘要或可整理的證據，answerable 應該是 true。
+2. 問題不需要逐字出現在參考資料中；只要能根據參考資料做合理整理、比較、歸納或說明，就可以回答。
+3. 如果只是出現少量相同關鍵字、相似主題、影片標題相關，卻缺少問題所需的核心證據，answerable 必須是 false。
+4. 如果需要依靠常識、外部知識、推測、延伸聯想才能回答，answerable 必須是 false。
+5. 如果問題是一般知識、天氣、程式、人生建議，但參考資料沒有明確討論，answerable 必須是 false。
+6. confidence 只能是 high、medium、low。
+7. 只能輸出 JSON，不要輸出 Markdown、解釋文字或其他內容。
+
+輸出格式：
+{{
+  "answerable": false,
+  "confidence": "low",
+  "reason": "一句話說明判斷原因"
+}}
+
+{build_rag_context_sections(question, retrieved_context, history_text)}
+"""
+
+
+def build_gemini_rag_answer_prompt(question: str, retrieved_context: str, history_text: str = "") -> str:
+    """建立 Gemini 專用 prompt：共用回答規則，但要求輸出 JSON。"""
+    return f"""你現在是一個嚴格且專業的「知識庫檢索助理」。請同時完成可答性判斷與回答生成，並只輸出 JSON 物件。
+
+JSON 欄位固定如下：
+{{
+  "answerable": true,
+  "confidence": "high",
+  "answer": "使用繁體中文寫出答案；如果無法回答，固定填入：{NO_ANSWER_MESSAGE}",
+  "reason": "一句話說明可答性判斷"
+}}
+
+共用回答規則：
+{build_shared_rag_answer_rules()}
+
+Gemini 輸出規則：
+- 如果【參考資料】足以回答，answerable 請設為 true。
+- 如果【參考資料】無法回答問題，answerable 必須是 false，answer 必須是「{NO_ANSWER_MESSAGE}」。
+- confidence 只能是 high、medium、low。
+- 只能輸出 JSON，不要輸出 Markdown、解釋文字或其他內容。
+
+{build_rag_context_sections(question, retrieved_context, history_text)}
+"""
+
+
+def build_ollama_rag_answer_prompt(question: str, retrieved_context: str, history_text: str = "") -> str:
+    """建立本地 Ollama 專用 prompt：共用回答規則，但輸出一般答案正文。"""
+    return f"""你現在是一個嚴格且專業的「知識庫檢索助理」。
+系統已先確認參考資料可能足以回答問題，但你仍然必須依據下方規則作答。
+
+共用回答規則：
+{build_shared_rag_answer_rules()}
+
+{build_rag_context_sections(question, retrieved_context, history_text)}
+"""
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         return max(1, int(os.getenv(name, str(default))))
@@ -1563,39 +1662,7 @@ def judge_answerability(
             "reason": "no_retrieved_context"
         }
 
-    history_section = ""
-    if history_text:
-        history_section = f"""
-【歷史對話】
-{history_text}
-
-注意：歷史對話只能用來理解代名詞或追問脈絡，不能當作回答證據。"""
-
-    prompt = f"""你是一個 RAG 可答性判斷器，只負責判斷「參考資料是否足以支撐回答使用者問題」，不要真的回答問題。
-
-判斷規則：
-1. 如果參考資料提供了問題的核心主題、相關事實、摘要或可整理的證據，answerable 應該是 true。
-2. 問題不需要逐字出現在參考資料中；只要能根據參考資料做合理整理、比較、歸納或說明，就可以回答。
-3. 如果只是出現少量相同關鍵字、相似主題、影片標題相關，卻缺少問題所需的核心證據，answerable 必須是 false。
-4. 如果需要依靠常識、外部知識、推測、延伸聯想才能回答，answerable 必須是 false。
-5. 如果問題是一般知識、天氣、程式、人生建議，但參考資料沒有明確討論，answerable 必須是 false。
-6. confidence 只能是 high、medium、low。
-7. 只能輸出 JSON，不要輸出 Markdown、解釋文字或其他內容。
-
-輸出格式：
-{{
-  "answerable": false,
-  "confidence": "low",
-  "reason": "一句話說明判斷原因"
-}}
-{history_section}
-
-【參考資料】
-{retrieved_context}
-
-【使用者問題】
-{question}
-"""
+    prompt = build_answerability_prompt(question, retrieved_context, history_text)
     try:
         response_text = generate_text(prompt, llm_provider)
         parsed = extract_json_object(response_text)
@@ -1627,43 +1694,7 @@ def generate_gemini_rag_answer(
     history_text: str = "",
     llm_provider: str | None = None,
 ) -> dict[str, Any]:
-    history_section = ""
-    if history_text:
-        history_section = f"""
-【歷史對話】
-{history_text}
-
-注意：歷史對話只能用來理解代名詞或追問脈絡，不能當作回答證據。"""
-
-    prompt = f"""你現在是一個嚴格且專業的「知識庫檢索助理」。請同時完成可答性判斷與回答生成，並只輸出 JSON 物件。
-
-JSON 欄位固定如下：
-{{
-  "answerable": true,
-  "confidence": "high",
-  "answer": "使用繁體中文寫出答案；如果無法回答，固定填入：{NO_ANSWER_MESSAGE}",
-  "reason": "一句話說明可答性判斷"
-}}
-
-規則：
-1. 必須完全且只能依據【參考資料】作答。
-2. 如果【參考資料】直接支持答案，answerable 請設為 true，answer 請用條理清晰的方式回答。
-3. 如果【參考資料】無法回答問題，answerable 必須是 false，answer 必須是「{NO_ANSWER_MESSAGE}」。
-4. 禁止根據常識、影片標題、相似主題、外部知識或背景知識延伸回答。
-5. answer 正文不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
-6. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
-7. 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
-8. 若參考資料同時包含「全局摘要」、「章節摘要」與「原文片段」，回答整體主題、摘要、潤色或深度解析問題時，請優先使用全局摘要與章節摘要，再用原文片段補細節。
-9. confidence 只能是 high、medium、low。
-10. 只能輸出 JSON，不要輸出 Markdown、解釋文字或其他內容。
-{history_section}
-
-【參考資料】
-{retrieved_context}
-
-【使用者問題】
-{question}
-"""
+    prompt = build_gemini_rag_answer_prompt(question, retrieved_context, history_text)
     response_text = generate_text(prompt, llm_provider)
     parsed = extract_json_object(response_text)
     if not parsed:
@@ -1928,25 +1959,7 @@ def answer_question(notebook_id: str, question: str, llm_provider: str | None = 
                 "refusal_reason": answerability.get("reason") or "no_relevant_evidence"
             }
 
-        rag_prompt = f"""你現在是一個嚴格且專業的「知識庫檢索助理」。
-系統已先確認參考資料可能足以回答問題，但你仍然必須【完全且只能】依據下方的【參考資料】作答。
-
-⚠️ 絕對遵守以下規則：
-1.【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字！
-2. 如果【參考資料】直接支持答案，請用條理清晰、分點說明的方式回答。
-3. 如果【參考資料】無法回答問題，請誠實回答：「根據目前資料庫的錄音紀錄，並未提及此資訊」，【絕對不可以】編造答案。
-4. 禁止根據常識、影片標題、相似主題、外部知識或你的背景知識延伸回答。
-5. 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
-6. 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
-7. 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
-8. 若有【歷史對話】，只能用來理解追問脈絡，不能把歷史對話當作新的事實來源。
-9. 若參考資料同時包含「全局摘要」、「章節摘要」與「原文片段」，回答整體主題、摘要、潤色或深度解析問題時，請優先使用全局摘要與章節摘要，再用原文片段補細節。"""
-
-        if history_text:
-            rag_prompt += f"\n\n【歷史對話】：\n{history_text}"
-
-        rag_prompt += f"\n\n【參考資料】：\n{retrieved_context}"
-        rag_prompt += f"\n\n【使用者的問題】：\n{question}"
+        rag_prompt = build_ollama_rag_answer_prompt(question, retrieved_context, history_text)
 
         llm_was_used = True
         ai_answer = strip_model_source_mentions(generate_text(rag_prompt, llm_provider))

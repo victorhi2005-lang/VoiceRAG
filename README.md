@@ -203,7 +203,22 @@ pip install -r requirements.txt
 
 > 注意：PyTorch 需安裝 CUDA 版本。若直接執行 `pip install -r requirements.txt` 時找不到 `torch` / `torchaudio` / `torchvision` 的 CUDA 套件，請先至 [PyTorch 官網](https://pytorch.org/) 取得對應 CUDA 版本的安裝指令，再安裝其餘套件。
 
-### 3. 啟動服務
+### 3. 建立環境變數設定檔
+
+在 `backend` 資料夾中，複製 `.env.example`，並把複製出來的檔案重新命名為 `.env`。
+
+接著開啟 `backend/.env`，確認或填入以下設定：
+
+```env
+VOICERAG_DEFAULT_LLM_PROVIDER=ollama
+OLLAMA_LLM_MODEL=qwen3.5:9b-q4_K_M
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_KEY=填入你的API_KEY
+```
+
+若只使用本地 Ollama，可以先不填 Gemini API Key；若要使用 Gemini，請把 `填入你的API_KEY` 換成自己的 Gemini API Key。
+
+### 4. 啟動服務
 
 ```bash
 cd backend
