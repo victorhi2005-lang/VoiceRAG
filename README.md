@@ -201,7 +201,16 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-> 注意：PyTorch 需安裝 CUDA 版本。若直接執行 `pip install -r requirements.txt` 時找不到 `torch` / `torchaudio` / `torchvision` 的 CUDA 套件，請先至 [PyTorch 官網](https://pytorch.org/) 取得對應 CUDA 版本的安裝指令，再安裝其餘套件。
+> 注意：本專案的 `requirements.txt` 固定使用 CUDA 12.8 版 PyTorch：
+> `torch==2.11.0+cu128`、`torchaudio==2.11.0+cu128`、`torchvision==0.26.0+cu128`。
+> 這類 `+cu128` 套件不在一般 PyPI 來源中，第一次安裝時請先使用 PyTorch 官方 CUDA 12.8 套件來源安裝 PyTorch，再安裝其餘套件：
+>
+> ```powershell
+> python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128
+> python -m pip install -r requirements.txt
+> ```
+>
+> 如果你的 GPU 或驅動程式不支援 CUDA 12.8，請到 PyTorch 官網選擇符合本機環境的 CUDA 版本，並同步調整 `requirements.txt` 中的 PyTorch 版本。
 
 ### 3. 建立環境變數設定檔
 
