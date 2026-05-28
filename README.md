@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136.1-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Ollama](https://img.shields.io/badge/Ollama-Qwen3%3A14B-8B5CF6?logo=ollama&logoColor=white)](https://ollama.com/)
+[![Ollama](https://img.shields.io/badge/Ollama-qwen3.5%3A9b--q4_K_M-8B5CF6?logo=ollama&logoColor=white)](https://ollama.com/)
 [![CUDA](https://img.shields.io/badge/CUDA-GPU%20Accelerated-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
 
 </div>
@@ -15,18 +15,21 @@
 
 ## 專案總覽
 
-VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的本地端 AI 知識庫。系統聚焦三件事：保存口述知識、提升檢索效率，並讓 AI 回答能回到原始來源。
+VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的 AI 知識庫。系統聚焦三件事：保存口述知識、提升檢索效率，並讓 AI 回答能回到原始來源。
 
 ```
 口述錄音 → Whisper 語音轉文字 → AI 摘要整理 → 切分與向量化 → 向量知識庫 → RAG 智慧問答
 ```
 
 **核心特色：**
-- **本地端隱私**：資料保存在本機，AI 推理主要於本機 GPU 執行，不上傳雲端
+- **本地端優先**：預設使用本機 Ollama 與本機 GPU，音檔、逐字稿與知識庫資料保存在電腦內
 - **混合檢索 + 精排**：Dense 向量檢索、BM25、RRF 與 Reranker 逐步精煉結果
 - **多筆記本管理**：每個筆記本都是獨立知識空間，來源、對話、向量彼此隔離
+- **LLM Provider 可切換**：預設使用 Ollama，也可選用 Gemini 進行摘要與問答
 - **多輪對話**：自動帶入歷史上下文，支援追問與連續提問
 - **來源引用追溯**：AI 回答附帶具體引用來源，可追溯至原始音檔
+
+> 隱私提醒：若選擇 Gemini provider，摘要、分析或問答所需的文字內容會送往 Google Gemini API；若需要全本地處理，請維持使用 Ollama provider。
 
 ---
 
@@ -41,10 +44,24 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的本�
 | **語音辨識** | faster-whisper (`large-v3-turbo`) | CUDA 加速，VAD 過濾靜音 |
 | **Embedding** | `BAAI/bge-m3` (FP16) | 多語言向量化，1024 維 |
 | **Reranker** | `BAAI/bge-reranker-v2-m3` (FP16) | CrossEncoder 精排 |
-| **LLM** | Ollama `qwen3.5:9b-q4_K_M` | 本地端摘要與回答生成 |
+| **LLM** | Ollama `qwen3.5:9b-q4_K_M` / Gemini `gemini-2.5-flash` | 摘要、分析、檔名建議與回答生成 |
 | **向量資料庫** | ChromaDB | 每筆記本獨立 Collection |
 | **關聯資料庫** | SQLite | 筆記本、來源、對話與推薦問題 |
 | **關鍵字檢索** | rank_bm25 + jieba | 中文分詞與 BM25 索引 |
+
+### 後端模組分層
+
+目前後端已從單一檔案拆成多個服務模組，讓 API 路由、模型載入、資料庫操作與 RAG 流程更清楚：
+
+| 模組 | 負責內容 |
+|------|----------|
+| `main.py` | FastAPI 入口、靜態頁面與 API 路由 |
+| `db.py` | SQLite 初始化、查詢、寫入與簡易 migration |
+| `models.py` | Embedding、Reranker、Whisper 載入與 GPU 記憶體管理 |
+| `llm_service.py` | Ollama / Gemini provider 設定、文字生成與停止生成 |
+| `audio_service.py` | 音檔儲存、轉錄、摘要、檔名建議、來源刪除與資料一致性檢查 |
+| `rag_service.py` | 語意切分、ChromaDB 索引、混合檢索、Reranker、問答與引用過濾 |
+| `schemas.py` | Pydantic 請求資料模型 |
 
 ### 知識建立流程
 
@@ -52,18 +69,21 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的本�
 flowchart LR
     A["錄音 / 上傳音檔"] --> B["FastAPI"]
     B --> C["Whisper 語音辨識"]
-    C --> D["語意切分"]
-    D --> E["BGE-M3 向量化"]
-    E --> F["ChromaDB 儲存"]
-    B --> G["Qwen3:14B 摘要"]
+    C --> D["摘要 / 深度分析"]
+    D --> E["語意切分與摘要片段"]
+    E --> F["BGE-M3 向量化"]
+    F --> G["ChromaDB 儲存"]
+    B --> H["LLM Provider"]
+    H --> D
 
     style A fill:#E3F2FD,stroke:#1565C0,color:#000
     style B fill:#FFF3E0,stroke:#E65100,color:#000
     style C fill:#F3E5F5,stroke:#7B1FA2,color:#000
     style D fill:#FCE4EC,stroke:#C62828,color:#000
     style E fill:#F3E5F5,stroke:#7B1FA2,color:#000
-    style F fill:#E8F5E9,stroke:#2E7D32,color:#000
-    style G fill:#F3E5F5,stroke:#7B1FA2,color:#000
+    style F fill:#F3E5F5,stroke:#7B1FA2,color:#000
+    style G fill:#E8F5E9,stroke:#2E7D32,color:#000
+    style H fill:#F3E5F5,stroke:#7B1FA2,color:#000
 ```
 
 ### RAG 問答流程
@@ -77,7 +97,7 @@ flowchart LR
     C --> F["RRF 排名融合"]
     E --> F
     F --> G["BGE-Reranker 精排至 Top-5"]
-    G --> H["Qwen3:14B 生成回答"]
+    G --> H["LLM Provider 生成回答"]
     H --> I["引用過濾 + 來源追溯"]
 
     style F fill:#E3F2FD,stroke:#1565C0,color:#000
@@ -98,13 +118,21 @@ flowchart LR
 ### 音檔上傳與即時錄音
 - 支援 MP3 / M4A / WAV / WebM 等常見音訊格式
 - 網頁端直接錄音，錄音完成自動上傳處理
-- AI 自動依據逐字稿內容產生音檔名稱
+- 可選擇自動命名，AI 會依據逐字稿或分析內容產生較容易辨識的來源檔名
 
 ### 語音辨識與 AI 摘要
 - Whisper `large-v3-turbo` 高速繁體中文語音辨識（VAD + Batch 推理）
 - 保留每段語音的時間戳，供引用追溯使用
-- Qwen3:14B 自動產生結構化重點摘要
+- 依音檔長度自動選擇快速摘要或長音檔深度分析
+- Ollama / Gemini 可產生結構化重點、章節摘要、核心主題與推薦問題
 - 上傳完成後自動產生推薦問題
+- 分析結果也會寫入 ChromaDB，讓問答可以同時參考原文片段與摘要片段
+
+### LLM Provider 切換
+- 預設 provider 為本地 Ollama，可透過 `.env` 設定 `VOICERAG_DEFAULT_LLM_PROVIDER`
+- 前端可切換 Ollama 或 Gemini，切換後會呼叫後端預載對應模型設定
+- 支援停止回答：Ollama 會透過 `keep_alive=0` 嘗試釋放模型佔用
+- Gemini 需要 `GEMINI_API_KEY`；若未設定，前端會顯示不可用狀態
 
 ### 四階段混合檢索
 1. **Dense 向量檢索**：BGE-M3 語意相似度搜尋
@@ -121,7 +149,9 @@ flowchart LR
 ### 逐字稿修正與重新索引
 - 查看完整語音逐字稿
 - 手動修正 Whisper 辨識錯誤
-- 修正後自動重新切分、向量化並更新索引
+- 修正後自動重新切分、向量化、重新分析並更新索引
+- 可針對單一來源重新產生摘要分析與推薦問題
+- 可要求 AI 重新建議來源檔名
 
 ### 資料維護
 - 資料一致性檢查：自動比對 SQLite / ChromaDB / 音檔三方資料
@@ -135,17 +165,21 @@ flowchart LR
 rag_project/
 ├── README.md                        # 專案說明文件
 ├── AGENTS.md                        # AI 協作指南
+├── pyrefly.toml                     # Python 型別檢查設定
 ├── docs/
 │   ├── improvement_plan1.md         # RAG 強化計畫（第一階段）
 │   ├── improvement_plan2.md         # 強化計畫（第二階段）
 │   ├── notebook_dashboard_plan.md   # 多筆記本功能規劃
 │   └── troubleshooting_log.md       # 開發除錯紀錄
+├── scripts/                         # 輔助腳本
 └── backend/
+    ├── .env.example                 # 環境變數範例
     ├── main.py                      # FastAPI 入口，API 路由定義
-    ├── models.py                    # AI 模型載入（Embedding / Reranker / Whisper）
-    ├── rag_service.py               # RAG 核心邏輯（檢索 / 排序 / 問答 / 切分）
-    ├── audio_service.py             # 音檔管理（上傳 / 轉錄 / 摘要 / 刪除）
     ├── db.py                        # SQLite 資料層（筆記本 / 來源 / 對話）
+    ├── models.py                    # AI 模型載入（Embedding / Reranker / Whisper）
+    ├── llm_service.py               # LLM provider 管理（Ollama / Gemini）
+    ├── audio_service.py             # 音檔管理（上傳 / 轉錄 / 摘要 / 刪除）
+    ├── rag_service.py               # RAG 核心邏輯（檢索 / 排序 / 問答 / 切分）
     ├── schemas.py                   # Pydantic 請求模型
     ├── requirements.txt             # Python 套件清單
     ├── static/
@@ -167,7 +201,8 @@ rag_project/
 | **GPU** | NVIDIA GPU（建議 RTX 3060 12GB 以上） |
 | **VRAM** | 建議 16GB（同時載入 Embedding + Reranker + Whisper + LLM） |
 | **RAM** | 建議 32GB |
-| **Ollama** | 需預先安裝並拉取模型 `qwen3.5:9b-q4_K_M` |
+| **Ollama** | 本地 provider 需預先安裝並拉取模型 `qwen3.5:9b-q4_K_M` |
+| **Gemini API Key** | 選用 Gemini provider 時才需要 |
 
 ### VRAM 預估
 
@@ -176,8 +211,8 @@ rag_project/
 | BGE-M3 Embedding (FP16) | ~2 GB |
 | BGE-Reranker-v2-m3 (FP16) | ~1.5 GB |
 | Whisper large-v3-turbo (FP16) | ~3 GB（後端啟動時載入） |
-| Ollama Qwen3:14B | ~9 GB |
-| **合計** | **~15.5 GB** |
+| Ollama `qwen3.5:9b-q4_K_M` | 約 6-9 GB，依 Ollama 與 GPU offload 設定而定 |
+| **合計** | **約 12.5-15.5 GB** |
 
 > Whisper 會在後端啟動時載入 GPU；轉錄前系統會主動卸載 Ollama 模型並清理 CUDA 快取，以降低同時載入多個模型造成的 VRAM 壓力。
 
@@ -214,7 +249,11 @@ pip install -r requirements.txt
 
 ### 3. 建立環境變數設定檔
 
-在 `backend` 資料夾中，複製 `.env.example`，並把複製出來的檔案重新命名為 `.env`。
+在 `backend` 資料夾中，將 `.env.example` 複製為 `.env`。也就是把 `backend/.env.example` 複製成 `backend/.env`。
+
+```powershell
+Copy-Item .env.example .env
+```
 
 接著開啟 `backend/.env`，確認或填入以下設定：
 
@@ -225,7 +264,7 @@ GEMINI_MODEL=gemini-2.5-flash
 GEMINI_API_KEY=填入你的API_KEY
 ```
 
-若只使用本地 Ollama，可以先不填 Gemini API Key；若要使用 Gemini，請把 `填入你的API_KEY` 換成自己的 Gemini API Key。
+若只使用本地 Ollama，可以先不填 Gemini API Key；若要使用 Gemini，請把 `填入你的API_KEY` 換成自己的 Gemini API Key。使用 Gemini 時，摘要、分析或問答需要的文字內容會送到 Google Gemini API。
 
 ### 4. 啟動服務
 
@@ -243,6 +282,13 @@ uvicorn main:app --reload
 
 ## API 一覽
 
+### LLM Provider
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `GET` | `/api/llm-providers/` | 取得可用 provider、預設 provider 與模型設定 |
+| `POST` | `/api/llm-providers/preload` | 預載指定 provider 需要的本地模型設定 |
+
 ### 筆記本管理
 
 | 方法 | 路徑 | 說明 |
@@ -257,18 +303,21 @@ uvicorn main:app --reload
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| `POST` | `/upload-audio/` | 上傳音檔（自動轉錄 + 摘要 + 向量化） |
+| `POST` | `/upload-audio/` | 上傳音檔（自動轉錄 + 摘要 / 分析 + 向量化，可帶 `llm_provider`） |
 | `GET` | `/api/notebooks/{id}/sources/{sid}/transcript` | 取得來源逐字稿 |
-| `PUT` | `/api/notebooks/{id}/sources/{sid}/transcript` | 修正逐字稿並重新索引 |
+| `PUT` | `/api/notebooks/{id}/sources/{sid}/transcript` | 修正逐字稿、重新分析並重新索引 |
 | `GET` | `/api/notebooks/{id}/sources/{sid}/audio` | 下載來源音檔 |
 | `PUT` | `/api/notebooks/{id}/sources/{sid}/filename` | 修改來源檔名 |
+| `POST` | `/api/notebooks/{id}/sources/{sid}/filename/suggest` | 依逐字稿或分析內容產生 AI 建議檔名 |
+| `POST` | `/api/notebooks/{id}/sources/{sid}/reanalyze` | 重新產生來源摘要分析、摘要片段與推薦問題 |
 | `DELETE` | `/api/notebooks/{id}/sources/{sid}` | 刪除來源（同步刪除向量 + 音檔） |
 
 ### 問答
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| `POST` | `/ask-question/` | RAG 知識庫問答 |
+| `POST` | `/ask-question/` | RAG 知識庫問答，可帶 `llm_provider` |
+| `POST` | `/api/stop-answer/` | 停止目前 provider 的回答生成；Ollama 會嘗試卸載模型 |
 | `POST` | `/api/notebooks/{id}/suggested-questions/{qid}/used` | 標記推薦問題為已使用 |
 
 ### 系統維護
@@ -344,6 +393,10 @@ erDiagram
         TEXT timed_segments "時間戳 JSON"
         TEXT transcript_updated_at "逐字稿修改時間"
         TEXT indexed_at "最後索引時間"
+        TEXT analysis_mode "quick / deep"
+        TEXT analysis_status "pending / completed / failed"
+        TEXT analysis_json "摘要分析 JSON"
+        TEXT analysis_updated_at "分析更新時間"
     }
 
     messages {
@@ -372,19 +425,27 @@ erDiagram
 
 ### ChromaDB
 
-每個筆記本對應一個獨立 Collection（`notebook_{id}`），每個文件片段包含：
+每個筆記本對應一個獨立 Collection（`notebook_{id}`）。目前會索引兩類內容：
+
+- **原文片段**：逐字稿經語意切分後的片段，供精準引用與時間戳追溯使用。
+- **分析片段**：來源的全局摘要與章節摘要，供整體性問題與長音檔問答使用。
+
+每個 ChromaDB 文件包含：
 
 | 欄位 | 說明 |
 |------|------|
-| `id` | `{source_id}_chunk_{index}_{隨機碼}` |
+| `id` | 原文片段為 `{source_id}_chunk_{index}_{隨機碼}`；摘要片段為 `{source_id}_global_summary_{隨機碼}` 或 `{source_id}_chapter_{index}_{隨機碼}` |
 | `embedding` | 1024 維向量（BGE-M3 FP16） |
 | `document` | 知識片段文字 |
 | `metadata.source` | 來源檔名 |
 | `metadata.source_id` | 來源 UUID |
+| `metadata.doc_type` | `transcript_chunk`、`global_summary` 或 `chapter_summary` |
 | `metadata.chunk_index` | 片段序號 |
+| `metadata.chapter_index` | 章節摘要序號；原文片段通常不使用 |
 | `metadata.char_start` / `char_end` | 在逐字稿中的字元位置 |
 | `metadata.start_time` / `end_time` | 對應音檔的時間範圍（秒） |
 | `metadata.time_range` | 格式化時間文字（如 `02:13-02:48`） |
+| `metadata.analysis_version` | 摘要分析版本；只存在於分析片段 |
 
 ---
 
@@ -392,7 +453,8 @@ erDiagram
 
 - **GPU 必要**：Whisper、Embedding、Reranker 均依賴 CUDA GPU，無 GPU 環境無法正常運行
 - **模型載入順序**：`sentence_transformers` 必須先於 `faster_whisper` 載入，否則 Windows 下會因 DLL / OpenMP 衝突導致無聲崩潰（詳見 [troubleshooting_log.md](docs/troubleshooting_log.md)）
-- **Ollama 必須運行**：啟動前需確認 Ollama 服務可用且已拉取 `qwen3.5:9b-q4_K_M` 模型
+- **Ollama provider 需要本機服務**：使用本地 provider 前，需確認 Ollama 服務可用且已拉取 `qwen3.5:9b-q4_K_M` 模型
+- **Gemini provider 不是本地推理**：使用 Gemini 時，相關文字內容會送往 Google Gemini API，需要自行評估資料隱私與 API 配額
 - **VRAM 管理**：系統會在轉錄前主動卸載 Ollama 模型以釋放 VRAM，避免 OOM 崩潰
 - **單人使用設計**：目前未實作使用者認證與多人並行機制
 
@@ -405,6 +467,12 @@ erDiagram
 
 ### 四階段混合檢索 + 引用過濾
 **提升找得到與找得準的機率。** 系統結合 Dense 向量檢索、BM25 關鍵字檢索、RRF 融合與 Reranker 精排，從 20 份候選中篩選至 Top-5。回答後再過濾引用，只保留真正支撐答案的來源。
+
+### 長音檔深度分析
+**把長逐字稿整理成可問答的知識結構。** 系統會依照逐字稿長度與音檔時間判斷是否啟用深度分析，長音檔會拆成章節後分段分析，再產生全局摘要、章節摘要、核心主題與推薦問題。
+
+### 原文與摘要雙索引
+**同時支援細節追問與整體理解。** 原始逐字稿片段保留時間戳，適合回答「哪裡提到」這類問題；摘要片段則保存全局與章節重點，適合回答「整段內容重點是什麼」這類問題。
 
 ### GPU 記憶體動態管理
 **降低多模型同時執行的 VRAM 壓力。** Whisper、Embedding 與 Reranker 會在後端啟動時載入 GPU。轉錄音檔前，系統會呼叫 Ollama API 卸載 LLM 模型（`keep_alive=0`），並清空 CUDA 快取、觸發 GC，降低 OOM 風險。
@@ -422,7 +490,7 @@ erDiagram
 | AI 知識結構化 | ✅ | ✅ | ✅ | ⚠️ 有限 |
 | RAG 知識問答 | ✅ 混合檢索 + 精排 | ✅ 雲端 | ⚠️ 有限 | ❌ |
 | 來源引用追溯 | ✅ 含時間戳 | ✅ | ❌ | ❌ |
-| 資料隱私 | ✅ 全本地 | ❌ 雲端 | ❌ 雲端 | ❌ 雲端 |
+| 資料隱私 | ✅ Ollama 模式可本地端；Gemini 模式為雲端 | ❌ 雲端 | ❌ 雲端 | ❌ 雲端 |
 | 繁體中文 | ✅ 專案優化 | ✅ | ✅ | ⚠️ 以簡體情境較常見 |
 | 費用 | 本機硬體成本 | 依服務方案 | 月費制 | 按量或方案計費 |
 
