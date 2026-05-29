@@ -27,9 +27,9 @@ def _int_env(name: str, default: int) -> int:
 EMBEDDING_BATCH_SIZE = _int_env("VOICERAG_EMBEDDING_BATCH_SIZE", 8)
 RERANKER_BATCH_SIZE = _int_env("VOICERAG_RERANKER_BATCH_SIZE", 8)
 WHISPER_BATCH_SIZE = _int_env("VOICERAG_WHISPER_BATCH_SIZE", 16)
-GEMINI_EMBEDDING_BATCH_SIZE = _int_env("VOICERAG_GEMINI_EMBEDDING_BATCH_SIZE", 32)
-GEMINI_RERANKER_BATCH_SIZE = _int_env("VOICERAG_GEMINI_RERANKER_BATCH_SIZE", 16)
-GEMINI_WHISPER_BATCH_SIZE = _int_env("VOICERAG_GEMINI_WHISPER_BATCH_SIZE", 32)
+CLOUD_EMBEDDING_BATCH_SIZE = _int_env("VOICERAG_CLOUD_EMBEDDING_BATCH_SIZE", 32)
+CLOUD_RERANKER_BATCH_SIZE = _int_env("VOICERAG_CLOUD_RERANKER_BATCH_SIZE", 16)
+CLOUD_WHISPER_BATCH_SIZE = _int_env("VOICERAG_CLOUD_WHISPER_BATCH_SIZE", 32)
 
 WHISPER_COMPUTE_TYPE = os.getenv(
     "VOICERAG_WHISPER_COMPUTE_TYPE",
@@ -67,7 +67,7 @@ def get_embeddings_model() -> SentenceTransformer:
     with _model_lock:
         if _embeddings_model is None:
             print(
-                f"正在載入 Embedding 向量模型 ({EMBEDDING_MODEL_NAME}) 到 {EMBEDDING_DEVICE}，請稍候...",
+                f"Loading embedding model ({EMBEDDING_MODEL_NAME}) on {EMBEDDING_DEVICE}...",
                 flush=True,
             )
             _embeddings_model = SentenceTransformer(
@@ -84,7 +84,7 @@ def get_reranker() -> CrossEncoder:
     with _model_lock:
         if _reranker is None:
             print(
-                f"正在載入 Reranker 精排模型 ({RERANKER_MODEL_NAME}) 到 {RERANKER_DEVICE}，請稍候...",
+                f"Loading reranker model ({RERANKER_MODEL_NAME}) on {RERANKER_DEVICE}...",
                 flush=True,
             )
             _reranker = CrossEncoder(
@@ -95,39 +95,39 @@ def get_reranker() -> CrossEncoder:
         return _reranker
 
 
-def _is_gemini_provider(llm_provider: str | None = None) -> bool:
-    return (llm_provider or "").strip().lower() in {"gemini", "google", "google_gemini"}
+def _is_cloud_llm_provider(llm_provider: str | None = None) -> bool:
+    return (llm_provider or "").strip().lower() in {"deepseek"}
 
 
 def get_embedding_batch_size(llm_provider: str | None = None) -> int:
-    if _is_gemini_provider(llm_provider):
-        return GEMINI_EMBEDDING_BATCH_SIZE
+    if _is_cloud_llm_provider(llm_provider):
+        return CLOUD_EMBEDDING_BATCH_SIZE
     return EMBEDDING_BATCH_SIZE
 
 
 def get_reranker_batch_size(llm_provider: str | None = None) -> int:
-    if _is_gemini_provider(llm_provider):
-        return GEMINI_RERANKER_BATCH_SIZE
+    if _is_cloud_llm_provider(llm_provider):
+        return CLOUD_RERANKER_BATCH_SIZE
     return RERANKER_BATCH_SIZE
 
 
 def get_whisper_batch_size(llm_provider: str | None = None) -> int:
-    if _is_gemini_provider(llm_provider):
-        return GEMINI_WHISPER_BATCH_SIZE
+    if _is_cloud_llm_provider(llm_provider):
+        return CLOUD_WHISPER_BATCH_SIZE
     return WHISPER_BATCH_SIZE
 
 
 def preload_retrieval_models() -> None:
     get_embeddings_model()
     get_reranker()
-    print("[OK] Embedding 與 Reranker 已預先載入完成。", flush=True)
+    print("[OK] Embedding and reranker models are ready.", flush=True)
 
 
 def preload_models_for_provider(llm_provider: str | None = None) -> None:
     preload_retrieval_models()
-    if _is_gemini_provider(llm_provider):
+    if _is_cloud_llm_provider(llm_provider):
         get_whisper_model()
-        print("[OK] Gemini 模式已預先載入 Whisper。", flush=True)
+        print("[OK] Cloud LLM mode preload completed, including Whisper.", flush=True)
 
 
 def get_whisper_model() -> BatchedInferencePipeline:
@@ -136,7 +136,7 @@ def get_whisper_model() -> BatchedInferencePipeline:
     with _model_lock:
         if _whisper_model is None:
             print(
-                f"正在載入本地端 Whisper 模型 ({WHISPER_MODEL_NAME}) 到 {WHISPER_DEVICE}，請稍候...",
+                f"Loading Whisper model ({WHISPER_MODEL_NAME}) on {WHISPER_DEVICE}...",
                 flush=True,
             )
             _base_whisper_model = WhisperModel(

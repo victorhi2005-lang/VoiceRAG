@@ -273,7 +273,13 @@ def get_source_update_info(notebook_id, source_id):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT filename, transcript_text, timed_segments
+        SELECT
+            filename,
+            transcript_text,
+            timed_segments,
+            analysis_mode,
+            analysis_status,
+            analysis_updated_at
         FROM sources
         WHERE id = ? AND notebook_id = ?
         """,

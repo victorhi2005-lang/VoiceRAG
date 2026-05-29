@@ -28,7 +28,7 @@ from models import (
     get_whisper_model,
     unload_whisper_model,
 )
-from llm_service import generate_text, is_gemini_provider, is_ollama_provider, normalize_llm_provider, stop_llm_generation
+from llm_service import generate_text, is_ollama_provider, normalize_llm_provider, stop_llm_generation
 from rag_service import (
     clear_orphan_chroma_segments,
     build_source_analysis,

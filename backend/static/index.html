@@ -228,9 +228,9 @@
                         <button id="llmProviderOllamaBtn" type="button" onclick="setLlmProvider('ollama')"
                             class="px-3 py-1.5 rounded-lg text-xs font-medium transition"
                             title="使用本機 Ollama 模型回答與分析">本地 AI</button>
-                        <button id="llmProviderGeminiBtn" type="button" onclick="setLlmProvider('gemini')"
+                        <button id="llmProviderDeepseekBtn" type="button" onclick="setLlmProvider('deepseek')"
                             class="px-3 py-1.5 rounded-lg text-xs font-medium transition"
-                            title="使用 Google Gemini API 回答與分析">Gemini</button>
+                            title="使用 DeepSeek API 回答與分析">DeepSeek</button>
                     </div>
                 </div>
             </div>
@@ -323,12 +323,24 @@
                 <textarea id="transcriptInput"
                     class="w-full min-h-[360px] flex-1 bg-[#131314] border border-[#444] rounded-lg px-4 py-3 text-gray-200 text-sm leading-relaxed resize-none focus:outline-none focus:border-gray-400 disabled:opacity-60"
                     placeholder="逐字稿會顯示在這裡..."></textarea>
+                <div id="transcriptDiffPreview"
+                    class="hidden w-full min-h-[360px] flex-1 overflow-y-auto bg-[#131314] border border-[#444] rounded-lg px-4 py-3 text-gray-200 text-sm leading-relaxed whitespace-pre-wrap break-words"></div>
             </div>
-            <div class="p-5 border-t border-[#333] flex justify-end gap-3">
-                <button onclick="closeTranscriptModal()"
-                    class="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
-                <button id="saveTranscriptBtn" onclick="saveTranscriptAndReindex()"
-                    class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-[#333] disabled:text-gray-500 disabled:cursor-not-allowed text-white rounded-lg transition">儲存並重新索引</button>
+            <div class="p-5 border-t border-[#333] flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div class="flex flex-wrap gap-2">
+                    <button id="aiCorrectTranscriptBtn" onclick="runTranscriptAiEdit('correct')"
+                        class="px-4 py-2 text-sm bg-[#2f333a] hover:bg-[#3a3f48] disabled:bg-[#25272c] disabled:text-gray-500 disabled:cursor-not-allowed text-gray-200 rounded-lg transition">AI 修正與加標點</button>
+                </div>
+                <div class="flex flex-wrap justify-end gap-3">
+                    <button id="cancelTranscriptDiffBtn" onclick="cancelTranscriptDiffPreview()"
+                        class="hidden px-4 py-2 text-sm text-gray-400 hover:text-white">取消套用</button>
+                    <button id="applyTranscriptDiffBtn" onclick="applyTranscriptDiffPreview()"
+                        class="hidden px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition">套用到文字框</button>
+                    <button id="closeTranscriptBtn" onclick="closeTranscriptModal()"
+                        class="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
+                    <button id="saveTranscriptBtn" onclick="saveTranscriptAndReindex()"
+                        class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-[#333] disabled:text-gray-500 disabled:cursor-not-allowed text-white rounded-lg transition">儲存並重新索引</button>
+                </div>
             </div>
         </div>
     </div>
@@ -373,6 +385,7 @@
         let renameTargetSource = null;
         let currentTranscriptSourceId = null;
         let currentTranscriptOriginalText = '';
+        let currentTranscriptPendingEdit = null;
         let activeAudio = null;
         let activeAudioSourceId = null;
         let activeAudioButton = null;
@@ -388,7 +401,7 @@
         let currentLlmProvider = localStorage.getItem(LLM_PROVIDER_STORAGE_KEY) || 'ollama';
         let llmProviders = {
             ollama: { id: 'ollama', label: '本地 AI', available: true, message: '' },
-            gemini: { id: 'gemini', label: 'Gemini', available: false, message: 'Gemini API Key 尚未設定' }
+            deepseek: { id: 'deepseek', label: 'DeepSeek', available: false, message: 'DeepSeek API Key 尚未設定' }
         };
 
         function escapeHtml(value) {
@@ -507,12 +520,12 @@
 
         function renderLlmProviderToggle() {
             const ollamaBtn = document.getElementById('llmProviderOllamaBtn');
-            const geminiBtn = document.getElementById('llmProviderGeminiBtn');
-            if (!ollamaBtn || !geminiBtn) return;
+            const deepseekBtn = document.getElementById('llmProviderDeepseekBtn');
+            if (!ollamaBtn || !deepseekBtn) return;
 
             const buttons = [
                 { provider: 'ollama', element: ollamaBtn },
-                { provider: 'gemini', element: geminiBtn }
+                { provider: 'deepseek', element: deepseekBtn }
             ];
 
             buttons.forEach(({ provider, element }) => {
@@ -533,8 +546,8 @@
             if (!meta.available) {
                 showToast({
                     tone: 'error',
-                    title: 'Gemini 尚未啟用',
-                    message: meta.message || '請先在 backend/.env 設定 GEMINI_API_KEY。'
+                    title: `${meta.label || 'AI 模式'} 尚未啟用`,
+                    message: meta.message || '請先在 backend/.env 設定 API Key。'
                 });
                 renderLlmProviderToggle();
                 return;
@@ -547,13 +560,13 @@
         }
 
         async function preloadLlmProvider(provider) {
-            if (provider !== 'gemini') return;
+            if (provider !== 'deepseek') return;
             try {
                 await fetch(`/api/llm-providers/preload?llm_provider=${encodeURIComponent(provider)}`, {
                     method: 'POST'
                 });
             } catch (error) {
-                console.warn('Gemini preload failed:', error);
+                console.warn('DeepSeek preload failed:', error);
             }
         }
 
@@ -1574,6 +1587,159 @@
             }
         }
 
+        function setTranscriptAiButtonsDisabled(disabled) {
+            const aiCorrectBtn = document.getElementById('aiCorrectTranscriptBtn');
+            if (aiCorrectBtn) aiCorrectBtn.disabled = disabled;
+        }
+
+        function appendDiffText(container, text) {
+            if (!text) return;
+            container.appendChild(document.createTextNode(text));
+        }
+
+        function createDiffBadge(text, className, title = '') {
+            const badge = document.createElement('span');
+            badge.className = `mx-1 inline-flex max-w-full align-baseline rounded border px-1.5 py-0.5 text-[11px] leading-4 ${className}`;
+            badge.textContent = text;
+            if (title) badge.title = title;
+            return badge;
+        }
+
+        function renderTranscriptDiffPreview(diffBlocks) {
+            const preview = document.getElementById('transcriptDiffPreview');
+            preview.innerHTML = '';
+
+            (diffBlocks || []).forEach(block => {
+                const type = block.type;
+                const originalText = block.original_text || '';
+                const editedText = block.edited_text || '';
+
+                if (type === 'equal') {
+                    appendDiffText(preview, editedText);
+                    return;
+                }
+
+                if (type === 'insert') {
+                    const inserted = document.createElement('span');
+                    inserted.className = 'rounded bg-emerald-500/20 px-0.5 text-emerald-100 ring-1 ring-emerald-500/40';
+                    inserted.textContent = editedText;
+                    preview.appendChild(inserted);
+                    return;
+                }
+
+                if (type === 'delete') {
+                    preview.appendChild(createDiffBadge(`刪：${originalText}`, 'border-red-500/40 bg-red-500/10 text-red-200 line-through', originalText));
+                    return;
+                }
+
+                if (type === 'replace') {
+                    const replacement = document.createElement('span');
+                    replacement.className = 'rounded bg-amber-500/20 px-0.5 text-amber-100 ring-1 ring-amber-500/40';
+                    replacement.textContent = editedText;
+                    preview.appendChild(replacement);
+                    preview.appendChild(createDiffBadge(`原：${originalText}`, 'border-amber-500/40 bg-amber-500/10 text-amber-200', originalText));
+                }
+            });
+        }
+
+        function setTranscriptPreviewMode(enabled) {
+            const input = document.getElementById('transcriptInput');
+            const preview = document.getElementById('transcriptDiffPreview');
+            const saveBtn = document.getElementById('saveTranscriptBtn');
+            const applyBtn = document.getElementById('applyTranscriptDiffBtn');
+            const cancelDiffBtn = document.getElementById('cancelTranscriptDiffBtn');
+            const closeBtn = document.getElementById('closeTranscriptBtn');
+
+            input.classList.toggle('hidden', enabled);
+            preview.classList.toggle('hidden', !enabled);
+            applyBtn.classList.toggle('hidden', !enabled);
+            cancelDiffBtn.classList.toggle('hidden', !enabled);
+            closeBtn.classList.toggle('hidden', enabled);
+            input.disabled = enabled;
+            saveBtn.disabled = enabled;
+            setTranscriptAiButtonsDisabled(enabled);
+        }
+
+        function resetTranscriptDiffPreview() {
+            currentTranscriptPendingEdit = null;
+            const preview = document.getElementById('transcriptDiffPreview');
+            if (preview) preview.innerHTML = '';
+            setTranscriptPreviewMode(false);
+        }
+
+        function applyTranscriptDiffPreview() {
+            if (!currentTranscriptPendingEdit) return;
+
+            const input = document.getElementById('transcriptInput');
+            const statusEl = document.getElementById('transcriptStatus');
+            input.value = currentTranscriptPendingEdit.editedText;
+            resetTranscriptDiffPreview();
+            input.focus();
+            statusEl.textContent = 'AI 結果已套用到文字框，請確認內容後再儲存並重新索引。';
+        }
+
+        function cancelTranscriptDiffPreview() {
+            const statusEl = document.getElementById('transcriptStatus');
+            resetTranscriptDiffPreview();
+            statusEl.textContent = '已取消套用 AI 結果，逐字稿內容未變更。';
+        }
+
+        async function runTranscriptAiEdit(operation) {
+            if (!currentNotebookId || !currentTranscriptSourceId) return;
+
+            const statusEl = document.getElementById('transcriptStatus');
+            const input = document.getElementById('transcriptInput');
+            const saveBtn = document.getElementById('saveTranscriptBtn');
+            const transcriptText = input.value.trim();
+            const operationLabel = operation === 'correct' ? 'AI 修正' : '加標點符號';
+
+            if (!transcriptText) {
+                statusEl.textContent = '逐字稿不可為空。';
+                return;
+            }
+
+            currentTranscriptPendingEdit = null;
+            input.disabled = true;
+            saveBtn.disabled = true;
+            setTranscriptAiButtonsDisabled(true);
+            statusEl.textContent = `正在進行${operationLabel}，請稍候...`;
+
+            try {
+                const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${currentTranscriptSourceId}/transcript/ai-edit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        transcript_text: transcriptText,
+                        operation,
+                        llm_provider: currentLlmProvider
+                    })
+                });
+                const data = await readSuccessfulApiResponse(res, `${operationLabel}失敗`);
+
+                if (!data.changed) {
+                    statusEl.textContent = data.message || `${operationLabel}完成，沒有需要套用的修改。`;
+                    return;
+                }
+
+                currentTranscriptPendingEdit = {
+                    editedText: data.edited_transcript_text || '',
+                    diffBlocks: data.diff_blocks || []
+                };
+                renderTranscriptDiffPreview(currentTranscriptPendingEdit.diffBlocks);
+                setTranscriptPreviewMode(true);
+                statusEl.textContent = data.message || `${operationLabel}完成，請確認修改比對後再套用。`;
+            } catch (error) {
+                console.error(`${operationLabel}失敗`, error);
+                statusEl.textContent = error.message || `${operationLabel}失敗，請稍後再試。`;
+            } finally {
+                if (!currentTranscriptPendingEdit) {
+                    input.disabled = false;
+                    saveBtn.disabled = false;
+                    setTranscriptAiButtonsDisabled(false);
+                }
+            }
+        }
+
         async function openTranscriptModal(sourceId) {
             if (!currentNotebookId || !sourceId) return;
 
@@ -1589,8 +1755,11 @@
             statusEl.textContent = '正在載入逐字稿...';
             input.value = '';
             currentTranscriptOriginalText = '';
+            currentTranscriptPendingEdit = null;
+            resetTranscriptDiffPreview();
             input.disabled = true;
             saveBtn.disabled = true;
+            setTranscriptAiButtonsDisabled(true);
 
             try {
                 const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${sourceId}/transcript`);
@@ -1609,6 +1778,7 @@
                     input.placeholder = '這是舊資料，尚未保存逐字稿。';
                     input.disabled = true;
                     saveBtn.disabled = true;
+                    setTranscriptAiButtonsDisabled(true);
                     return;
                 }
 
@@ -1617,6 +1787,7 @@
                 currentTranscriptOriginalText = source.transcript_text || '';
                 input.disabled = false;
                 saveBtn.disabled = false;
+                setTranscriptAiButtonsDisabled(false);
                 statusEl.textContent = source.indexed_at
                     ? `目前索引時間：${source.indexed_at}`
                     : '可修正文字後重新建立索引。';
@@ -1625,12 +1796,14 @@
                 statusEl.textContent = error.message || '讀取逐字稿時發生錯誤。';
                 input.disabled = true;
                 saveBtn.disabled = true;
+                setTranscriptAiButtonsDisabled(true);
             }
         }
 
         function closeTranscriptModal() {
             currentTranscriptSourceId = null;
             currentTranscriptOriginalText = '';
+            currentTranscriptPendingEdit = null;
             document.getElementById('transcriptModal').classList.add('hidden');
         }
 
@@ -1641,6 +1814,11 @@
             const input = document.getElementById('transcriptInput');
             const saveBtn = document.getElementById('saveTranscriptBtn');
             const transcriptText = input.value.trim();
+
+            if (currentTranscriptPendingEdit) {
+                statusEl.textContent = '請先套用或取消 AI 修改比對，再儲存逐字稿。';
+                return;
+            }
 
             if (!transcriptText) {
                 statusEl.textContent = '逐字稿不可為空。';
@@ -1676,9 +1854,6 @@
                             if (sourceEl) {
                                 sourceEl.replaceWith(createSourceElement(data.source));
                             }
-                        }
-                        if (data.suggested_questions) {
-                            renderSuggestedQuestions(data.suggested_questions || []);
                         }
                     }
                 } else {

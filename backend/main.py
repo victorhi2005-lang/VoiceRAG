@@ -19,7 +19,7 @@ from db import (
     mark_suggested_question_used_record,
     update_notebook_name,
 )
-from schemas import NotebookUpdate, QuestionRequest, SourceFilenameUpdate, TranscriptUpdateRequest
+from schemas import NotebookUpdate, QuestionRequest, SourceFilenameUpdate, TranscriptAiEditRequest, TranscriptUpdateRequest
 from models import preload_models_for_provider
 from llm_service import get_default_llm_provider, normalize_llm_provider
 
@@ -56,6 +56,7 @@ from audio_service import (
 from llm_service import get_llm_provider_config, stop_llm_generation
 from rag_service import (
     SourceNotFoundError,
+    ai_edit_source_transcript,
     answer_question,
     get_notebook_collection,
     update_source_transcript,
@@ -123,6 +124,27 @@ async def update_source_transcript_endpoint(notebook_id: str, source_id: str, re
         return update_source_transcript(notebook_id, source_id, request.transcript_text, request.llm_provider)
     except SourceNotFoundError:
         raise HTTPException(status_code=404, detail="找不到指定來源")
+
+
+@app.post("/api/notebooks/{notebook_id}/sources/{source_id}/transcript/ai-edit")
+async def ai_edit_source_transcript_endpoint(notebook_id: str, source_id: str, request: TranscriptAiEditRequest):
+    try:
+        result = ai_edit_source_transcript(
+            notebook_id,
+            source_id,
+            request.transcript_text,
+            request.operation,
+            request.llm_provider,
+        )
+        if result.get("status") != "success":
+            raise HTTPException(status_code=400, detail=result.get("message", "AI 編輯失敗"))
+        return result
+    except SourceNotFoundError:
+        raise HTTPException(status_code=404, detail="找不到指定來源")
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"AI 編輯失敗：{error}")
 
 
 @app.get("/api/notebooks/{notebook_id}/sources/{source_id}/audio")

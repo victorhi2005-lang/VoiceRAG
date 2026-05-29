@@ -1,3 +1,4 @@
+import difflib
 import json
 import os
 import re
@@ -17,7 +18,6 @@ from db import (
     append_qa_messages,
     get_recent_messages,
     get_source_update_info,
-    save_suggested_questions,
     update_source_transcript_record,
 )
 from models import (
@@ -28,7 +28,7 @@ from models import (
     get_reranker_batch_size,
     unload_whisper_model,
 )
-from llm_service import generate_text, is_gemini_provider, is_ollama_provider, normalize_llm_provider, stop_llm_generation
+from llm_service import generate_text, is_deepseek_provider, is_ollama_provider, normalize_llm_provider, stop_llm_generation
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -62,6 +62,8 @@ ANSWER_CONTEXT_MAX_COUNT = 5
 ANSWER_CONTEXT_SCORE_MARGIN = 1.0
 ANSWERABILITY_STRONG_BEST_OVERLAP = 3.5
 ANSWERABILITY_STRONG_TOTAL_OVERLAP = 6.5
+TRANSCRIPT_AI_EDIT_MAX_CHARS = 4500
+TRANSCRIPT_AI_EDIT_OPERATIONS = {"correct", "punctuate"}
 
 
 def build_history_context_section(history_text: str) -> str:
@@ -88,7 +90,7 @@ def build_rag_context_sections(question: str, retrieved_context: str, history_te
 
 
 def build_shared_rag_answer_rules() -> str:
-    """本地 AI 與 Gemini 共用的 RAG 回答規則。"""
+    """本地 AI 與雲端 LLM 共用的 RAG 回答規則。"""
     return f"""- 【務必】使用「繁體中文」進行輸出，嚴禁出現簡體字。
 - 必須完全且只能依據【參考資料】作答。
 - 如果【參考資料】直接支持答案，請用條理清晰、分點說明的方式回答。
@@ -125,8 +127,8 @@ def build_answerability_prompt(question: str, retrieved_context: str, history_te
 """
 
 
-def build_gemini_rag_answer_prompt(question: str, retrieved_context: str, history_text: str = "") -> str:
-    """建立 Gemini 專用 prompt：共用回答規則，但要求輸出 JSON。"""
+def build_structured_rag_answer_prompt(question: str, retrieved_context: str, history_text: str = "") -> str:
+    """建立雲端 LLM 專用 prompt：共用回答規則，但要求輸出 JSON。"""
     return f"""你現在是一個嚴格且專業的「知識庫檢索助理」。請同時完成可答性判斷與回答生成，並只輸出 JSON 物件。
 
 JSON 欄位固定如下：
@@ -140,7 +142,7 @@ JSON 欄位固定如下：
 共用回答規則：
 {build_shared_rag_answer_rules()}
 
-Gemini 輸出規則：
+雲端 LLM 輸出規則：
 - 如果【參考資料】足以回答，answerable 請設為 true。
 - 如果【參考資料】無法回答問題，answerable 必須是 false，answer 必須是「{NO_ANSWER_MESSAGE}」。
 - confidence 只能是 high、medium、low。
@@ -170,7 +172,7 @@ def _int_env(name: str, default: int) -> int:
 
 
 ANALYSIS_VERSION = "1.0"
-GEMINI_CHAPTER_CONCURRENCY = _int_env("VOICERAG_GEMINI_CHAPTER_CONCURRENCY", 3)
+DEEPSEEK_CHAPTER_CONCURRENCY = _int_env("VOICERAG_DEEPSEEK_CHAPTER_CONCURRENCY", 3)
 LONG_AUDIO_SECONDS = 10 * 60
 LONG_TRANSCRIPT_CHARS = 5000
 CHAPTER_TARGET_SECONDS = 4 * 60
@@ -482,10 +484,10 @@ def analyze_chapters_with_limited_concurrency(
     chapter_inputs: list[dict[str, Any]],
     llm_provider: str | None = None,
 ) -> list[dict[str, Any]]:
-    if not is_gemini_provider(llm_provider) or len(chapter_inputs) <= 1:
+    if not is_deepseek_provider(llm_provider) or len(chapter_inputs) <= 1:
         return [analyze_chapter_with_llm(chapter, llm_provider) for chapter in chapter_inputs]
 
-    max_workers = min(GEMINI_CHAPTER_CONCURRENCY, len(chapter_inputs))
+    max_workers = min(DEEPSEEK_CHAPTER_CONCURRENCY, len(chapter_inputs))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         return list(executor.map(
             lambda chapter: analyze_chapter_with_llm(chapter, llm_provider),
@@ -559,7 +561,7 @@ def build_source_analysis(
     duration_seconds = get_transcript_duration(timed_segments)
 
     if mode == "quick":
-        if is_gemini_provider(llm_provider):
+        if is_deepseek_provider(llm_provider):
             quick_analysis = generate_quick_analysis_with_llm(transcript_text, llm_provider)
             summary = str(quick_analysis.get("overview") or "").strip()
             suggested_questions = normalize_text_list(quick_analysis.get("suggested_questions"), limit=3)
@@ -1688,13 +1690,13 @@ def judge_answerability(
     }
 
 
-def generate_gemini_rag_answer(
+def generate_structured_rag_answer(
     question: str,
     retrieved_context: str,
     history_text: str = "",
     llm_provider: str | None = None,
 ) -> dict[str, Any]:
-    prompt = build_gemini_rag_answer_prompt(question, retrieved_context, history_text)
+    prompt = build_structured_rag_answer_prompt(question, retrieved_context, history_text)
     response_text = generate_text(prompt, llm_provider)
     parsed = extract_json_object(response_text)
     if not parsed:
@@ -1703,7 +1705,7 @@ def generate_gemini_rag_answer(
             "answerable": bool(answer) and not is_no_answer_response(answer),
             "confidence": "medium",
             "answer": answer or NO_ANSWER_MESSAGE,
-            "reason": "gemini_json_parse_failed",
+            "reason": "structured_json_parse_failed",
         }
 
     answerable = parse_answerable_value(parsed.get("answerable"))
@@ -1722,8 +1724,155 @@ def generate_gemini_rag_answer(
     }
 
 
+def split_transcript_for_ai_edit(text: str, max_chars: int = TRANSCRIPT_AI_EDIT_MAX_CHARS) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    preferred_breaks = ["\n", "。", "！", "？", "；", "，", " "]
+    min_cut = int(max_chars * 0.55)
+
+    while len(remaining) > max_chars:
+        cut_at = max_chars
+        for delimiter in preferred_breaks:
+            found_at = remaining.rfind(delimiter, 0, max_chars + 1)
+            if found_at >= min_cut:
+                cut_at = found_at + len(delimiter)
+                break
+
+        chunks.append(remaining[:cut_at])
+        remaining = remaining[cut_at:]
+
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def build_transcript_ai_edit_prompt(text: str, operation: str, chunk_label: str = "") -> str:
+    scope_note = f"\n目前處理範圍：{chunk_label}。請只輸出此範圍修正後的文字。" if chunk_label else ""
+    if operation == "correct":
+        task_rules = """任務：修正語音辨識逐字稿。
+- 只修正明顯錯字、語音辨識錯誤、標點與必要斷句。
+- 必須保留原意、原本資訊量與口語感。
+- 不可以摘要、不可以擴寫、不可以改寫成正式文章。
+- 原本有換行就盡量保留，不要主動大量分段。
+- 請只輸出修正後逐字稿，不要加說明、標題、引號或 Markdown。"""
+    else:
+        task_rules = """任務：為語音辨識逐字稿加上標點符號。
+- 只補標點符號與必要斷句。
+- 不可以修正詞語、不可以改寫內容、不可以摘要。
+- 必須保留原本文字順序與原本換行。
+- 請只輸出加上標點後的逐字稿，不要加說明、標題、引號或 Markdown。"""
+
+    return f"""你是一位繁體中文逐字稿校對助手。
+{task_rules}
+{scope_note}
+
+逐字稿內容：
+{text}"""
+
+
+def clean_ai_transcript_output(response_text: str) -> str:
+    text = (response_text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[A-Za-z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+
+    prefixes = (
+        "修正後逐字稿：",
+        "修正後的逐字稿：",
+        "加上標點後的逐字稿：",
+        "加標點後逐字稿：",
+        "逐字稿：",
+    )
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+
+def generate_ai_edited_transcript(transcript_text: str, operation: str, llm_provider: str | None = None) -> str:
+    chunks = split_transcript_for_ai_edit(transcript_text)
+    edited_chunks: list[str] = []
+    chunk_count = len(chunks)
+
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_label = f"第 {index} / {chunk_count} 段" if chunk_count > 1 else ""
+        prompt = build_transcript_ai_edit_prompt(chunk, operation, chunk_label)
+        edited_chunk = clean_ai_transcript_output(generate_text(prompt, llm_provider))
+        if not edited_chunk:
+            raise RuntimeError("AI 沒有回傳可用的逐字稿內容。")
+        if chunk.endswith("\n") and not edited_chunk.endswith("\n"):
+            edited_chunk = f"{edited_chunk}\n"
+        edited_chunks.append(edited_chunk)
+
+    return "".join(edited_chunks).strip()
+
+
+def build_transcript_diff_blocks(original_text: str, edited_text: str) -> list[dict[str, str]]:
+    matcher = difflib.SequenceMatcher(None, original_text, edited_text, autojunk=False)
+    return [
+        {
+            "type": tag,
+            "original_text": original_text[old_start:old_end],
+            "edited_text": edited_text[new_start:new_end],
+        }
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes()
+    ]
+
+
 class SourceNotFoundError(Exception):
     pass
+
+
+def ai_edit_source_transcript(
+    notebook_id: str,
+    source_id: str,
+    transcript_text: str,
+    operation: str,
+    llm_provider: str | None = None,
+) -> dict[str, Any]:
+    llm_provider = normalize_llm_provider(llm_provider)
+    operation = (operation or "").strip().lower()
+    transcript_text = (transcript_text or "").strip()
+
+    if operation not in TRANSCRIPT_AI_EDIT_OPERATIONS:
+        return {"status": "error", "message": "不支援的 AI 編輯操作。"}
+    if not transcript_text:
+        return {"status": "error", "message": "逐字稿不可為空。"}
+
+    row = get_source_update_info(notebook_id, source_id)
+    if not row:
+        raise SourceNotFoundError()
+
+    filename, existing_transcript, *_ = row
+    if not existing_transcript or not existing_transcript.strip():
+        return {"status": "error", "message": "此來源尚未保存逐字稿，請重新上傳音檔後再編輯。"}
+
+    try:
+        edited_text = generate_ai_edited_transcript(transcript_text, operation, llm_provider)
+    finally:
+        stop_local_llm_after_use(llm_provider)
+
+    diff_blocks = build_transcript_diff_blocks(transcript_text, edited_text)
+    changed = edited_text != transcript_text
+    operation_label = "AI 修正" if operation == "correct" else "加標點符號"
+    message = (
+        f"{operation_label}完成，請確認修改比對後再套用。"
+        if changed
+        else f"{operation_label}完成，AI 未產生新的修改。"
+    )
+
+    return {
+        "status": "success",
+        "filename": filename,
+        "operation": operation,
+        "edited_transcript_text": edited_text,
+        "diff_blocks": diff_blocks,
+        "changed": changed,
+        "message": message,
+    }
 
 
 def update_source_transcript(notebook_id, source_id, transcript_text, llm_provider: str | None = None):
@@ -1736,7 +1885,7 @@ def update_source_transcript(notebook_id, source_id, transcript_text, llm_provid
     if not row:
         raise SourceNotFoundError()
 
-    filename, existing_transcript, timed_segments_json = row
+    filename, existing_transcript, timed_segments_json, analysis_mode, analysis_status, analysis_updated_at = row
     if not existing_transcript or not existing_transcript.strip():
         return {"status": "error", "message": "此來源尚未保存逐字稿，請重新上傳音檔後再編輯。"}
 
@@ -1755,50 +1904,34 @@ def update_source_transcript(notebook_id, source_id, transcript_text, llm_provid
 
     try:
         timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
-        analysis = build_source_analysis(filename, transcript_text, timed_segments, llm_provider)
         chunk_count = index_source_transcript(notebook_id, source_id, filename, transcript_text, timed_segments, llm_provider)
-        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis, llm_provider)
     except Exception as e:
         stop_local_llm_after_use(llm_provider)
         return {"status": "error", "message": f"重新索引失敗: {str(e)}"}
 
-    analysis_json = json.dumps(
-        {key: value for key, value in analysis.items() if key != "structured_knowledge"},
-        ensure_ascii=False
-    )
     now = update_source_transcript_record(
         notebook_id,
         source_id,
-        transcript_text,
-        analysis.get("mode"),
-        "completed",
-        analysis_json
+        transcript_text
     )
-    try:
-        save_suggested_questions(notebook_id, filename, analysis.get("suggested_questions", []))
-    except Exception:
-        pass
 
     stop_local_llm_after_use(llm_provider)
 
     return {
         "status": "success",
         "changed": True,
-        "message": f"逐字稿已更新，並重新建立 {chunk_count} 個原文片段與 {analysis_chunk_count} 個摘要片段。",
+        "message": f"逐字稿已更新，並重新建立 {chunk_count} 個原文片段。摘要分析與推薦問題未重新產生，如需更新請點擊「摘要檔案」。",
         "source": {
             "id": source_id,
             "filename": filename,
             "has_transcript": True,
             "transcript_updated_at": now,
             "indexed_at": now,
-            "analysis_mode": analysis.get("mode"),
-            "analysis_status": "completed",
-            "analysis_updated_at": now
+            "analysis_mode": analysis_mode,
+            "analysis_status": analysis_status,
+            "analysis_updated_at": analysis_updated_at
         },
-        "chunk_count": chunk_count,
-        "analysis_chunk_count": analysis_chunk_count,
-        "structured_knowledge": analysis.get("structured_knowledge", ""),
-        "suggested_questions": analysis.get("suggested_questions", [])
+        "chunk_count": chunk_count
     }
 
 
@@ -1903,11 +2036,11 @@ def answer_question(notebook_id: str, question: str, llm_provider: str | None = 
             history_text = "\n".join(history_lines)
 
         evidence_signal = get_answerability_evidence_signal(question, ranked)
-        if is_gemini_provider(llm_provider):
+        if is_deepseek_provider(llm_provider):
             llm_was_used = True
-            gemini_result = generate_gemini_rag_answer(question, retrieved_context, history_text, llm_provider)
-            answerable = bool(gemini_result["answerable"])
-            ai_answer = str(gemini_result["answer"])
+            structured_result = generate_structured_rag_answer(question, retrieved_context, history_text, llm_provider)
+            answerable = bool(structured_result["answerable"])
+            ai_answer = str(structured_result["answer"])
             if not answerable and evidence_signal["strong_evidence"] and not is_no_answer_response(ai_answer):
                 answerable = True
 
@@ -1927,8 +2060,8 @@ def answer_question(notebook_id: str, question: str, llm_provider: str | None = 
                 "source_files": source_files,
                 "references": references,
                 "answerable": answerable,
-                "confidence": str(gemini_result["confidence"]),
-                "refusal_reason": "" if answerable else (str(gemini_result.get("reason") or "") or "no_relevant_evidence")
+                "confidence": str(structured_result["confidence"]),
+                "refusal_reason": "" if answerable else (str(structured_result.get("reason") or "") or "no_relevant_evidence")
             }
 
         llm_was_used = True

@@ -25,11 +25,11 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的 AI �
 - **本地端優先**：預設使用本機 Ollama 與本機 GPU，音檔、逐字稿與知識庫資料保存在電腦內
 - **混合檢索 + 精排**：Dense 向量檢索、BM25、RRF 與 Reranker 逐步精煉結果
 - **多筆記本管理**：每個筆記本都是獨立知識空間，來源、對話、向量彼此隔離
-- **LLM Provider 可切換**：預設使用 Ollama，也可選用 Gemini 進行摘要與問答
+- **LLM Provider 可切換**：預設使用 Ollama，也可選用 DeepSeek 進行摘要與問答
 - **多輪對話**：自動帶入歷史上下文，支援追問與連續提問
 - **來源引用追溯**：AI 回答附帶具體引用來源，可追溯至原始音檔
 
-> 隱私提醒：若選擇 Gemini provider，摘要、分析或問答所需的文字內容會送往 Google Gemini API；若需要全本地處理，請維持使用 Ollama provider。
+> 隱私提醒：若選擇 DeepSeek provider，摘要、分析或問答所需的文字內容會送往 DeepSeek API；若需要全本地處理，請維持使用 Ollama provider。
 
 ---
 
@@ -44,7 +44,7 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的 AI �
 | **語音辨識** | faster-whisper (`large-v3-turbo`) | CUDA 加速，VAD 過濾靜音 |
 | **Embedding** | `BAAI/bge-m3` (FP16) | 多語言向量化，1024 維 |
 | **Reranker** | `BAAI/bge-reranker-v2-m3` (FP16) | CrossEncoder 精排 |
-| **LLM** | Ollama `qwen3.5:9b-q4_K_M` / Gemini `gemini-2.5-flash` | 摘要、分析、檔名建議與回答生成 |
+| **LLM** | Ollama `qwen3.5:9b-q4_K_M` / DeepSeek `deepseek-v4-flash` | 摘要、分析、檔名建議與回答生成 |
 | **向量資料庫** | ChromaDB | 每筆記本獨立 Collection |
 | **關聯資料庫** | SQLite | 筆記本、來源、對話與推薦問題 |
 | **關鍵字檢索** | rank_bm25 + jieba | 中文分詞與 BM25 索引 |
@@ -58,7 +58,7 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的 AI �
 | `main.py` | FastAPI 入口、靜態頁面與 API 路由 |
 | `db.py` | SQLite 初始化、查詢、寫入與簡易 migration |
 | `models.py` | Embedding、Reranker、Whisper 載入與 GPU 記憶體管理 |
-| `llm_service.py` | Ollama / Gemini provider 設定、文字生成與停止生成 |
+| `llm_service.py` | Ollama / DeepSeek provider 設定、文字生成與停止生成 |
 | `audio_service.py` | 音檔儲存、轉錄、摘要、檔名建議、來源刪除與資料一致性檢查 |
 | `rag_service.py` | 語意切分、ChromaDB 索引、混合檢索、Reranker、問答與引用過濾 |
 | `schemas.py` | Pydantic 請求資料模型 |
@@ -124,15 +124,15 @@ flowchart LR
 - Whisper `large-v3-turbo` 高速繁體中文語音辨識（VAD + Batch 推理）
 - 保留每段語音的時間戳，供引用追溯使用
 - 依音檔長度自動選擇快速摘要或長音檔深度分析
-- Ollama / Gemini 可產生結構化重點、章節摘要、核心主題與推薦問題
+- Ollama / DeepSeek 可產生結構化重點、章節摘要、核心主題與推薦問題
 - 上傳完成後自動產生推薦問題
 - 分析結果也會寫入 ChromaDB，讓問答可以同時參考原文片段與摘要片段
 
 ### LLM Provider 切換
 - 預設 provider 為本地 Ollama，可透過 `.env` 設定 `VOICERAG_DEFAULT_LLM_PROVIDER`
-- 前端可切換 Ollama 或 Gemini，切換後會呼叫後端預載對應模型設定
+- 前端可切換 Ollama 或 DeepSeek，切換後會呼叫後端預載對應模型設定
 - 支援停止回答：Ollama 會透過 `keep_alive=0` 嘗試釋放模型佔用
-- Gemini 需要 `GEMINI_API_KEY`；若未設定，前端會顯示不可用狀態
+- DeepSeek 需要 `DEEPSEEK_API_KEY`；若未設定，前端會顯示不可用狀態
 
 ### 四階段混合檢索
 1. **Dense 向量檢索**：BGE-M3 語意相似度搜尋
@@ -177,7 +177,7 @@ rag_project/
     ├── main.py                      # FastAPI 入口，API 路由定義
     ├── db.py                        # SQLite 資料層（筆記本 / 來源 / 對話）
     ├── models.py                    # AI 模型載入（Embedding / Reranker / Whisper）
-    ├── llm_service.py               # LLM provider 管理（Ollama / Gemini）
+    ├── llm_service.py               # LLM provider 管理（Ollama / DeepSeek）
     ├── audio_service.py             # 音檔管理（上傳 / 轉錄 / 摘要 / 刪除）
     ├── rag_service.py               # RAG 核心邏輯（檢索 / 排序 / 問答 / 切分）
     ├── schemas.py                   # Pydantic 請求模型
@@ -202,7 +202,7 @@ rag_project/
 | **VRAM** | 建議 16GB（同時載入 Embedding + Reranker + Whisper + LLM） |
 | **RAM** | 建議 32GB |
 | **Ollama** | 本地 provider 需預先安裝並拉取模型 `qwen3.5:9b-q4_K_M` |
-| **Gemini API Key** | 選用 Gemini provider 時才需要 |
+| **DeepSeek API Key** | 選用 DeepSeek provider 時才需要 |
 
 ### VRAM 預估
 
@@ -260,11 +260,12 @@ Copy-Item .env.example .env
 ```env
 VOICERAG_DEFAULT_LLM_PROVIDER=ollama
 OLLAMA_LLM_MODEL=qwen3.5:9b-q4_K_M
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_API_KEY=填入你的API_KEY
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_API_KEY=填入你的API_KEY
 ```
 
-若只使用本地 Ollama，可以先不填 Gemini API Key；若要使用 Gemini，請把 `填入你的API_KEY` 換成自己的 Gemini API Key。使用 Gemini 時，摘要、分析或問答需要的文字內容會送到 Google Gemini API。
+若只使用本地 Ollama，可以先不填 DeepSeek API Key；若要使用 DeepSeek，請把 `填入你的API_KEY` 換成自己的 DeepSeek API Key。使用 DeepSeek 時，摘要、分析或問答需要的文字內容會送到 DeepSeek API。
 
 ### 4. 啟動服務
 
@@ -454,7 +455,7 @@ erDiagram
 - **GPU 必要**：Whisper、Embedding、Reranker 均依賴 CUDA GPU，無 GPU 環境無法正常運行
 - **模型載入順序**：`sentence_transformers` 必須先於 `faster_whisper` 載入，否則 Windows 下會因 DLL / OpenMP 衝突導致無聲崩潰（詳見 [troubleshooting_log.md](docs/troubleshooting_log.md)）
 - **Ollama provider 需要本機服務**：使用本地 provider 前，需確認 Ollama 服務可用且已拉取 `qwen3.5:9b-q4_K_M` 模型
-- **Gemini provider 不是本地推理**：使用 Gemini 時，相關文字內容會送往 Google Gemini API，需要自行評估資料隱私與 API 配額
+- **DeepSeek provider 不是本地推理**：使用 DeepSeek 時，相關文字內容會送往 DeepSeek API，需要自行評估資料隱私與 API 配額
 - **VRAM 管理**：系統會在轉錄前主動卸載 Ollama 模型以釋放 VRAM，避免 OOM 崩潰
 - **單人使用設計**：目前未實作使用者認證與多人並行機制
 
@@ -490,7 +491,7 @@ erDiagram
 | AI 知識結構化 | ✅ | ✅ | ✅ | ⚠️ 有限 |
 | RAG 知識問答 | ✅ 混合檢索 + 精排 | ✅ 雲端 | ⚠️ 有限 | ❌ |
 | 來源引用追溯 | ✅ 含時間戳 | ✅ | ❌ | ❌ |
-| 資料隱私 | ✅ Ollama 模式可本地端；Gemini 模式為雲端 | ❌ 雲端 | ❌ 雲端 | ❌ 雲端 |
+| 資料隱私 | ✅ Ollama 模式可本地端；DeepSeek 模式為雲端 | ❌ 雲端 | ❌ 雲端 | ❌ 雲端 |
 | 繁體中文 | ✅ 專案優化 | ✅ | ✅ | ⚠️ 以簡體情境較常見 |
 | 費用 | 本機硬體成本 | 依服務方案 | 月費制 | 按量或方案計費 |
 
