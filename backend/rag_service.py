@@ -1935,7 +1935,101 @@ def update_source_transcript(notebook_id, source_id, transcript_text, llm_provid
     }
 
 
-def answer_question(notebook_id: str, question: str, llm_provider: str | None = None) -> dict[str, Any]:
+def retrieve_rag_context(notebook_id: str, question: str, llm_provider: str | None = None) -> dict[str, Any]:
+    llm_provider = normalize_llm_provider(llm_provider)
+    if is_ollama_provider(llm_provider):
+        unload_whisper_model()
+
+    query_vector = cast(
+        list[float],
+        get_embeddings_model().encode(question, batch_size=get_embedding_batch_size(llm_provider)).tolist(),
+    )
+
+    collection = get_notebook_collection(notebook_id)
+    if collection.count() == 0:
+        raise ValueError("這個筆記本目前沒有可用知識，請先上傳或新增來源。")
+
+    total_docs = collection.count()
+    n_candidates = min(40, total_docs)
+    global_question = is_global_question(question)
+
+    dense_results = cast(dict[str, Any], collection.query(
+        query_embeddings=[query_vector],
+        n_results=n_candidates,
+        include=["documents", "metadatas"]
+    ))
+    dense_docs = cast(list[str], (dense_results.get("documents") or [[]])[0])
+    dense_metas = cast(list[Metadata], (dense_results.get("metadatas") or [[]])[0])
+    doc_metadata_map: dict[str, Metadata] = {}
+    for doc, meta in zip(dense_docs, dense_metas):
+        if meta:
+            doc_metadata_map[doc] = meta
+
+    bm25_top_docs: list[str] = []
+    if notebook_id not in bm25_indices:
+        rebuild_bm25_index(notebook_id)
+
+    if notebook_id in bm25_indices and bm25_indices[notebook_id] is not None:
+        query_tokens = tokenize_chinese(question)
+        bm25_scores = bm25_indices[notebook_id].get_scores(query_tokens)
+        scored_indices = [
+            (int(index), float(score))
+            for index, score in enumerate(bm25_scores)
+            if float(score) > 0
+        ]
+        scored_indices.sort(key=lambda item: item[1], reverse=True)
+        top_indices = [index for index, _ in scored_indices[:n_candidates]]
+        bm25_top_docs = [bm25_docs[notebook_id][i] for i in top_indices]
+        if notebook_id in bm25_metas:
+            for i in top_indices:
+                doc_metadata_map[bm25_docs[notebook_id][i]] = bm25_metas[notebook_id][i] or {}
+
+    if bm25_top_docs:
+        fused_candidates = rrf_fusion(dense_docs, bm25_top_docs)
+    else:
+        fused_candidates = dense_docs
+
+    summary_docs, summary_metadata_map = get_summary_candidates(collection)
+    doc_metadata_map.update(summary_metadata_map)
+    if global_question and summary_docs:
+        fused_candidates = merge_ranked_candidates(summary_docs, fused_candidates, limit=60)
+    else:
+        fused_candidates = merge_ranked_candidates(fused_candidates, summary_docs[:6], limit=50)
+
+    pairs: list[tuple[str, str]] = [(question, doc) for doc in fused_candidates]
+    if not pairs:
+        raise ValueError("沒有找到足夠的知識片段，請先確認這個筆記本已完成索引。")
+
+    raw_scores = get_reranker().predict(cast(Any, pairs), batch_size=get_reranker_batch_size(llm_provider))
+    scores = normalize_reranker_scores(raw_scores)
+
+    ranked = select_answer_contexts(sorted(zip(scores, fused_candidates), key=lambda x: x[0], reverse=True))
+    top_documents = [doc for _, doc in ranked]
+    reference_candidates: list[dict[str, Any]] = []
+    context_blocks: list[str] = []
+    seen_reference_keys: set[str] = set()
+    for index, (reranker_score, doc) in enumerate(ranked, start=1):
+        metadata = doc_metadata_map.get(doc, {})
+        label = get_reference_label(metadata)
+        context_label = get_context_block_label(metadata, index)
+        context_blocks.append(f"[{context_label} | {label}]\n{doc}")
+        source_id = str(metadata.get("source_id", "")) if metadata else ""
+        chunk_index = metadata.get("chunk_index", -1) if metadata else -1
+        doc_type = metadata.get("doc_type", TRANSCRIPT_DOC_TYPE) if metadata else TRANSCRIPT_DOC_TYPE
+        reference_key = f"{source_id or label}:{doc_type}:{chunk_index}"
+        if reference_key not in seen_reference_keys:
+            seen_reference_keys.add(reference_key)
+            reference_candidates.append(build_reference_candidate(question, doc, metadata, reranker_score))
+
+    return {
+        "ranked": ranked,
+        "top_documents": top_documents,
+        "reference_candidates": reference_candidates,
+        "retrieved_context": "\n\n".join(context_blocks),
+    }
+
+
+def _answer_question_legacy(notebook_id: str, question: str, llm_provider: str | None = None) -> dict[str, Any]:
     llm_provider = normalize_llm_provider(llm_provider)
     llm_was_used = False
     try:
@@ -2119,6 +2213,130 @@ def answer_question(notebook_id: str, question: str, llm_provider: str | None = 
 
     except Exception as e:
         return {"status": "error", "message": f"問答過程發生錯誤: {str(e)}"}
+    finally:
+        if llm_was_used and is_ollama_provider(llm_provider):
+            stop_llm_generation(llm_provider)
+        if is_ollama_provider(llm_provider):
+            clear_cuda_memory()
+
+
+def build_recent_history_text(notebook_id: str, limit: int = 6) -> str:
+    history = get_recent_messages(notebook_id, limit=limit)
+    if not history:
+        return ""
+
+    history_lines = []
+    for msg in history:
+        role = "使用者" if msg["sender"] == "User" else "AI"
+        raw_history_text = str(msg["text"])
+        history_body = strip_model_source_mentions(raw_history_text) if msg["sender"] == "AI" else raw_history_text
+        text = history_body[:300] + "..." if len(history_body) > 300 else history_body
+        history_lines.append(f"{role}: {text}")
+    return "\n".join(history_lines)
+
+
+def answer_question(notebook_id: str, question: str, llm_provider: str | None = None) -> dict[str, Any]:
+    llm_provider = normalize_llm_provider(llm_provider)
+    llm_was_used = False
+    try:
+        try:
+            retrieval = retrieve_rag_context(notebook_id, question, llm_provider)
+        except ValueError as error:
+            return {"status": "error", "message": str(error)}
+
+        ranked = cast(list[tuple[float, str]], retrieval["ranked"])
+        top_documents = cast(list[str], retrieval["top_documents"])
+        reference_candidates = cast(list[dict[str, Any]], retrieval["reference_candidates"])
+        retrieved_context = str(retrieval["retrieved_context"])
+        history_text = build_recent_history_text(notebook_id, limit=6)
+
+        evidence_signal = get_answerability_evidence_signal(question, ranked)
+        if is_deepseek_provider(llm_provider):
+            llm_was_used = True
+            structured_result = generate_structured_rag_answer(question, retrieved_context, history_text, llm_provider)
+            answerable = bool(structured_result["answerable"])
+            ai_answer = str(structured_result["answer"])
+            if not answerable and evidence_signal["strong_evidence"] and not is_no_answer_response(ai_answer):
+                answerable = True
+
+            references = filter_relevant_references(question, ai_answer, reference_candidates, llm_provider) if answerable else []
+            source_files = list(dict.fromkeys(reference["source"] for reference in references))
+
+            try:
+                append_qa_messages(notebook_id, question, ai_answer, references)
+            except Exception:
+                pass
+
+            return {
+                "status": "success",
+                "response_type": "answer",
+                "question": question,
+                "answer": ai_answer,
+                "reference_sources": top_documents if answerable else [],
+                "source_files": source_files,
+                "references": references,
+                "answerable": answerable,
+                "confidence": str(structured_result["confidence"]),
+                "refusal_reason": "" if answerable else (str(structured_result.get("reason") or "") or "no_relevant_evidence")
+            }
+
+        llm_was_used = True
+        answerability = judge_answerability(question, retrieved_context, history_text, llm_provider)
+        if not answerability["answerable"] and evidence_signal["strong_evidence"]:
+            answerability = {
+                "answerable": True,
+                "confidence": "medium",
+                "reason": "retrieved_context_has_strong_keyword_evidence"
+            }
+
+        if not answerability["answerable"]:
+            references: list[dict[str, Any]] = []
+            try:
+                append_qa_messages(notebook_id, question, NO_ANSWER_MESSAGE, references)
+            except Exception:
+                pass
+
+            return {
+                "status": "success",
+                "response_type": "answer",
+                "question": question,
+                "answer": NO_ANSWER_MESSAGE,
+                "reference_sources": [],
+                "source_files": [],
+                "references": references,
+                "answerable": False,
+                "confidence": answerability["confidence"],
+                "refusal_reason": answerability.get("reason") or "no_relevant_evidence"
+            }
+
+        rag_prompt = build_ollama_rag_answer_prompt(question, retrieved_context, history_text)
+
+        llm_was_used = True
+        ai_answer = strip_model_source_mentions(generate_text(rag_prompt, llm_provider))
+        answerable = not is_no_answer_response(ai_answer)
+        references = filter_relevant_references(question, ai_answer, reference_candidates, llm_provider) if answerable else []
+        source_files = list(dict.fromkeys(reference["source"] for reference in references))
+
+        try:
+            append_qa_messages(notebook_id, question, ai_answer, references)
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "response_type": "answer",
+            "question": question,
+            "answer": ai_answer,
+            "reference_sources": top_documents,
+            "source_files": source_files,
+            "references": references,
+            "answerable": answerable,
+            "confidence": answerability["confidence"] if answerable else "low",
+            "refusal_reason": "" if answerable else "model_returned_no_answer"
+        }
+
+    except Exception as error:
+        return {"status": "error", "message": f"回答生成失敗：{str(error)}"}
     finally:
         if llm_was_used and is_ollama_provider(llm_provider):
             stop_llm_generation(llm_provider)

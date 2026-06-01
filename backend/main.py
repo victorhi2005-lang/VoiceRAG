@@ -12,6 +12,8 @@ if str(BASE_DIR) not in sys.path:
 
 from db import (
     create_notebook_record,
+    delete_diagram_record,
+    get_diagrams_data,
     get_notebook_details_data,
     get_notebooks_data,
     get_source_transcript_data,
@@ -19,7 +21,7 @@ from db import (
     mark_suggested_question_used_record,
     update_notebook_name,
 )
-from schemas import NotebookUpdate, QuestionRequest, SourceFilenameUpdate, TranscriptAiEditRequest, TranscriptUpdateRequest
+from schemas import DiagramRequest, NotebookUpdate, QuestionRequest, SourceFilenameUpdate, TranscriptAiEditRequest, TranscriptUpdateRequest
 from models import preload_models_for_provider
 from llm_service import get_default_llm_provider, normalize_llm_provider
 
@@ -54,6 +56,7 @@ from audio_service import (
     suggest_source_filename,
 )
 from llm_service import get_llm_provider_config, stop_llm_generation
+from diagram_service import detect_requested_diagram_type, generate_notebook_diagram
 from rag_service import (
     SourceNotFoundError,
     ai_edit_source_transcript,
@@ -101,7 +104,34 @@ async def get_notebook_details(notebook_id: str):
         "sources": details["sources"],
         "messages": details["messages"],
         "suggested_questions": details["suggested_questions"],
+        "diagrams": details.get("diagrams", []),
     }
+
+
+@app.get("/api/notebooks/{notebook_id}/diagrams")
+async def get_notebook_diagrams(notebook_id: str):
+    return {"status": "success", "diagrams": get_diagrams_data(notebook_id)}
+
+
+@app.post("/api/notebooks/{notebook_id}/diagrams")
+async def create_notebook_diagram(notebook_id: str, request: DiagramRequest):
+    result = generate_notebook_diagram(
+        notebook_id,
+        request.prompt,
+        request.diagram_type,
+        request.llm_provider,
+    )
+    if result.get("status") != "success":
+        raise HTTPException(status_code=400, detail=result.get("message", "圖表生成失敗"))
+    return result
+
+
+@app.delete("/api/notebooks/{notebook_id}/diagrams/{diagram_id}")
+async def delete_notebook_diagram(notebook_id: str, diagram_id: int):
+    result = delete_diagram_record(notebook_id, diagram_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="找不到圖表")
+    return {"status": "success", "diagram": result}
 
 
 @app.post("/api/notebooks/{notebook_id}/suggested-questions/{question_id}/used")
@@ -225,6 +255,16 @@ async def upload_audio(
 
 @app.post("/ask-question/")
 async def ask_question(request: QuestionRequest):
+    response_mode = (request.response_mode or "auto").strip().lower()
+    detected_diagram_type = detect_requested_diagram_type(request.question)
+    if response_mode == "diagram" or (response_mode == "auto" and detected_diagram_type):
+        diagram_type = request.diagram_type or detected_diagram_type or "flowchart"
+        return generate_notebook_diagram(
+            request.notebook_id,
+            request.question,
+            diagram_type,
+            request.llm_provider,
+        )
     return answer_question(request.notebook_id, request.question, request.llm_provider)
 
 

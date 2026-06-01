@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VoiceRAG 知識庫系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
     <style>
@@ -96,6 +97,44 @@
 
         .markdown-spacer {
             height: 0.45rem;
+        }
+
+        .diagram-preview svg {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .diagram-preview-expanded {
+            cursor: grab;
+            min-height: 0;
+            touch-action: none;
+            user-select: none;
+        }
+
+        .diagram-preview-expanded.is-panning {
+            cursor: grabbing;
+        }
+
+        .diagram-preview-expanded svg {
+            display: block;
+            margin: 0 auto;
+            max-width: none !important;
+            height: auto !important;
+            pointer-events: none;
+        }
+
+        .diagram-pan-surface {
+            align-items: center;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: center;
+            min-height: 100%;
+            padding: 4rem;
+        }
+
+        .diagram-code-block {
+            white-space: pre-wrap;
+            word-break: break-word;
         }
     </style>
 </head>
@@ -209,7 +248,7 @@
 
         <!-- 拖曳調整寬度分隔線 -->
         <div id="resizer"
-            class="w-1.5 cursor-col-resize hover:bg-gray-600 active:bg-blue-500 mt-3 mb-0 transition-colors z-20 flex-shrink-0 group flex justify-center items-center">
+            class="w-1 cursor-col-resize hover:bg-gray-600 active:bg-blue-500 mt-3 mb-0 transition-colors z-20 flex-shrink-0 group flex justify-center items-center">
             <div
                 class="h-10 w-1 rounded-full bg-gray-600 group-hover:bg-blue-400 transition-colors opacity-50 group-hover:opacity-100">
             </div>
@@ -217,7 +256,7 @@
 
         <!-- 主要對話區 -->
         <main
-            class="flex-1 flex flex-col relative h-screen overflow-hidden mt-3 mr-3 mb-0 rounded-t-xl border border-[#333] bg-[#1e1f22] shadow-lg">
+            class="flex-1 flex flex-col relative h-screen overflow-hidden mt-3 mr-0 mb-0 rounded-t-xl border border-[#333] bg-[#1e1f22] shadow-lg">
             <!-- 標題列 -->
             <div class="p-4 flex justify-between items-center border-b border-[#333]">
                 <h2 class="text-base font-semibold text-gray-200">對話</h2>
@@ -232,6 +271,16 @@
                             class="px-3 py-1.5 rounded-lg text-xs font-medium transition"
                             title="使用 DeepSeek API 回答與分析">DeepSeek</button>
                     </div>
+                    <button id="diagramWorkspaceToggle" type="button" onclick="toggleDiagramWorkspace()"
+                        class="inline-flex items-center gap-2 rounded-lg border border-[#444] bg-[#25272c] px-3 py-2 text-xs font-medium text-gray-300 hover:bg-[#333] hover:text-white transition"
+                        title="開啟或收合圖表工作區">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8"
+                            stroke="currentColor" class="w-4 h-4">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M3.75 4.5h16.5M3.75 9h16.5M3.75 13.5h10.5M3.75 18h7.5" />
+                        </svg>
+                        <span class="hidden sm:inline">圖表</span>
+                    </button>
                 </div>
             </div>
 
@@ -281,6 +330,124 @@
                 </div>
             </div>
         </main>
+
+        <div id="diagramWorkspaceResizer"
+            class="hidden md:flex w-1 cursor-col-resize hover:bg-gray-600 active:bg-blue-500 mt-3 mb-0 transition-colors z-20 flex-shrink-0 group justify-center items-center">
+            <div
+                class="h-10 w-1 rounded-full bg-gray-600 group-hover:bg-blue-400 transition-colors opacity-50 group-hover:opacity-100">
+            </div>
+        </div>
+
+        <aside id="diagramWorkspace"
+            class="hidden fixed md:static right-3 top-3 bottom-0 z-40 w-[min(26rem,calc(100vw-1.5rem))] shrink-0 flex-col mt-3 mr-3 mb-0 rounded-t-xl border border-[#333] bg-[#1e1f22] shadow-lg overflow-hidden">
+            <div class="flex items-center justify-between gap-3 border-b border-[#333] p-4">
+                <div class="min-w-0">
+                    <h2 class="text-base font-semibold text-gray-200">圖表工作區</h2>
+                    <p id="diagramWorkspaceMeta" class="mt-1 text-xs text-gray-500">尚未產生圖表</p>
+                </div>
+                <button type="button" onclick="toggleDiagramWorkspace()" class="text-gray-400 hover:text-white transition"
+                    title="收合圖表工作區">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                        stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div id="diagramActionPanel" class="shrink-0 border-b border-[#333] bg-[#1b1c1f] p-4">
+                <div class="grid grid-cols-2 gap-2">
+                    <button type="button" onclick="askQuestion(null, 'flowchart')"
+                        class="inline-flex min-h-14 items-center justify-center gap-2 rounded-lg border border-[#444] bg-[#25272c] px-3 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition"
+                        title="根據目前問題或筆記本知識生成流程圖">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                            stroke-width="1.8" stroke="currentColor" class="w-4 h-4 shrink-0">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M6 5.25h12M6 12h12M6 18.75h12M4.5 5.25h.01M4.5 12h.01M4.5 18.75h.01" />
+                        </svg>
+                        <span>流程圖</span>
+                    </button>
+                    <button type="button" onclick="askQuestion(null, 'fishbone')"
+                        class="inline-flex min-h-14 items-center justify-center gap-2 rounded-lg border border-[#444] bg-[#25272c] px-3 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition"
+                        title="根據目前問題或筆記本知識生成魚骨圖">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                            stroke-width="1.8" stroke="currentColor" class="w-4 h-4 shrink-0">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M4 12h15m-9-5 5 5-5 5M8 7l-4 5 4 5" />
+                        </svg>
+                        <span>魚骨圖</span>
+                    </button>
+                </div>
+            </div>
+            <div id="diagramWorkspaceBody" class="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+                <div id="diagramList" class="space-y-2"></div>
+                <div id="diagramPreviewPanel" class="hidden border border-[#333] bg-[#222428] rounded-lg overflow-hidden">
+                    <div class="flex items-start justify-between gap-3 border-b border-[#333] p-3">
+                        <div class="min-w-0">
+                            <h3 id="diagramPreviewTitle" class="truncate text-sm font-semibold text-gray-200"></h3>
+                            <p id="diagramPreviewSubtitle" class="mt-1 text-xs text-gray-500"></p>
+                        </div>
+                        <div class="flex shrink-0 gap-1">
+                            <button type="button" onclick="collapseDiagramPreview()"
+                                class="rounded-lg p-2 text-gray-400 hover:bg-[#333] hover:text-white transition"
+                                title="返回圖表列表">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                    stroke-width="1.8" stroke="currentColor" class="w-4 h-4">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
+                                </svg>
+                            </button>
+                            <button type="button" onclick="copyActiveDiagramCode()"
+                                class="rounded-lg p-2 text-gray-400 hover:bg-[#333] hover:text-white transition"
+                                title="複製 Mermaid 原始碼">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                    stroke-width="1.8" stroke="currentColor" class="w-4 h-4">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M8 7.5V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1.5M6 8h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" />
+                                </svg>
+                            </button>
+                            <button type="button" onclick="deleteActiveDiagram()"
+                                class="rounded-lg p-2 text-gray-400 hover:bg-red-500/20 hover:text-red-100 transition"
+                                title="刪除圖表">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                    stroke-width="1.8" stroke="currentColor" class="w-4 h-4">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673A2.25 2.25 0 0 1 15.916 21H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="diagramPreview" class="diagram-preview overflow-x-auto bg-[#131314] p-4 text-sm text-gray-300"></div>
+                    <div id="diagramZoomControls"
+                        class="hidden absolute bottom-4 right-4 overflow-hidden rounded-xl border border-[#3a3d44] bg-[#25272c]/95 shadow-2xl backdrop-blur">
+                        <button type="button" onclick="fitDiagramPreview()"
+                            class="block border-b border-[#3a3d44] p-3 text-gray-300 hover:bg-[#333] hover:text-white transition"
+                            title="適應畫面">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                stroke-width="1.8" stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M7.5 3.75H3.75v3.75m0-3.75 6 6m6.75-6h3.75v3.75m0-3.75-6 6M7.5 20.25H3.75V16.5m0 3.75 6-6m6.75 6h3.75V16.5m0 3.75-6-6" />
+                            </svg>
+                        </button>
+                        <button type="button" onclick="zoomDiagramPreview(0.15)"
+                            class="block border-b border-[#3a3d44] p-3 text-gray-300 hover:bg-[#333] hover:text-white transition"
+                            title="放大">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                            </svg>
+                        </button>
+                        <button type="button" onclick="zoomDiagramPreview(-0.15)"
+                            class="block p-3 text-gray-300 hover:bg-[#333] hover:text-white transition"
+                            title="縮小">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" />
+                            </svg>
+                        </button>
+                    </div>
+                    <pre id="diagramCodePreview"
+                        class="diagram-code-block hidden max-h-64 overflow-auto border-t border-[#333] bg-[#17181b] p-4 text-xs text-gray-300"></pre>
+                </div>
+            </div>
+        </aside>
     </div>
 
     <!-- 用於修改名稱的隱藏 Dialog (簡易版) -->
@@ -398,11 +565,46 @@
         let recordingTimer = null;
         let recordingStartedAt = 0;
         const LLM_PROVIDER_STORAGE_KEY = 'voicerag-llm-provider';
+        const DIAGRAM_WORKSPACE_STORAGE_KEY = 'voicerag-diagram-workspace-collapsed';
+        const DIAGRAM_WORKSPACE_WIDTH_STORAGE_KEY = 'voicerag-diagram-workspace-width';
+        const DIAGRAM_WORKSPACE_MIN_WIDTH = 320;
+        const DIAGRAM_WORKSPACE_DEFAULT_WIDTH = 400;
+        const DIAGRAM_PREVIEW_MIN_SCALE = 0.35;
+        const DIAGRAM_PREVIEW_MAX_SCALE = 3;
+        const DIAGRAM_PREVIEW_MIN_READABLE_SCALE = 0.85;
+        const DIAGRAM_PREVIEW_MAX_INITIAL_SCALE = 1.35;
         let currentLlmProvider = localStorage.getItem(LLM_PROVIDER_STORAGE_KEY) || 'ollama';
         let llmProviders = {
             ollama: { id: 'ollama', label: '本地 AI', available: true, message: '' },
             deepseek: { id: 'deepseek', label: 'DeepSeek', available: false, message: 'DeepSeek API Key 尚未設定' }
         };
+        let notebookDiagrams = [];
+        let activeDiagramId = null;
+        let expandedDiagramId = null;
+        let diagramPreviewScale = 1;
+        let diagramPreviewBaseSize = null;
+        let isDiagramPreviewPanning = false;
+        let diagramPreviewPanStart = null;
+        let diagramWorkspaceCollapsed = localStorage.getItem(DIAGRAM_WORKSPACE_STORAGE_KEY) !== 'false';
+        let diagramWorkspaceWidth = Number(localStorage.getItem(DIAGRAM_WORKSPACE_WIDTH_STORAGE_KEY)) || DIAGRAM_WORKSPACE_DEFAULT_WIDTH;
+        let isDiagramWorkspaceResizing = false;
+
+        if (window.mermaid) {
+            mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'strict',
+                theme: 'dark',
+                themeVariables: {
+                    background: '#131314',
+                    primaryColor: '#25272c',
+                    primaryTextColor: '#e5e7eb',
+                    primaryBorderColor: '#525866',
+                    lineColor: '#9ca3af',
+                    secondaryColor: '#1f2937',
+                    tertiaryColor: '#111827'
+                }
+            });
+        }
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -731,6 +933,477 @@
 
             wrapper.appendChild(list);
             return wrapper;
+        }
+
+        function getDiagramTypeLabel(type) {
+            return type === 'fishbone' ? '魚骨圖' : '流程圖';
+        }
+
+        function getDiagramById(id) {
+            return notebookDiagrams.find(diagram => String(diagram.id) === String(id)) || null;
+        }
+
+        function getDiagramReferenceCount(diagram) {
+            const references = Array.isArray(diagram?.references) ? diagram.references : [];
+            const sourceIds = new Set();
+            references.forEach(reference => {
+                const sourceId = reference?.source_id || reference?.id || reference?.source;
+                if (sourceId) sourceIds.add(String(sourceId));
+            });
+            return sourceIds.size || references.length;
+        }
+
+        function formatDiagramRelativeTime(value) {
+            if (!value) return '';
+            const parsed = Date.parse(String(value).replace(' ', 'T'));
+            if (Number.isNaN(parsed)) return String(value);
+
+            const diffMs = Date.now() - parsed;
+            if (diffMs < 60 * 1000) return '剛剛';
+
+            const diffMinutes = Math.floor(diffMs / (60 * 1000));
+            if (diffMinutes < 60) return `${diffMinutes} 分鐘前`;
+
+            const diffHours = Math.floor(diffMinutes / 60);
+            if (diffHours < 24) return `${diffHours} 小時前`;
+
+            const diffDays = Math.floor(diffHours / 24);
+            if (diffDays < 7) return `${diffDays} 天前`;
+
+            return String(value).split(' ')[0];
+        }
+
+        function getDiagramMetaText(diagram) {
+            const sourceCount = getDiagramReferenceCount(diagram);
+            const timeText = formatDiagramRelativeTime(diagram?.updated_at || diagram?.created_at);
+            return [`${sourceCount} 個來源`, timeText].filter(Boolean).join(' · ');
+        }
+
+        function clampDiagramWorkspaceWidth(width) {
+            const maxWidth = Math.max(DIAGRAM_WORKSPACE_MIN_WIDTH, window.innerWidth * 0.6);
+            return Math.min(Math.max(width, DIAGRAM_WORKSPACE_MIN_WIDTH), maxWidth);
+        }
+
+        function applyDiagramWorkspaceWidth() {
+            const workspace = document.getElementById('diagramWorkspace');
+            const resizer = document.getElementById('diagramWorkspaceResizer');
+            if (!workspace) return;
+
+            if (expandedDiagramId && !diagramWorkspaceCollapsed) {
+                workspace.style.position = 'fixed';
+                workspace.style.left = '0.75rem';
+                workspace.style.right = '0.75rem';
+                workspace.style.top = '0.75rem';
+                workspace.style.bottom = '0';
+                workspace.style.width = 'auto';
+                workspace.style.margin = '0';
+                workspace.style.zIndex = '60';
+                if (resizer) {
+                    resizer.classList.add('hidden');
+                    resizer.classList.remove('md:flex');
+                }
+                return;
+            }
+
+            workspace.style.position = '';
+            workspace.style.left = '';
+            workspace.style.right = '';
+            workspace.style.top = '';
+            workspace.style.bottom = '';
+            workspace.style.margin = '';
+            workspace.style.zIndex = '';
+            if (resizer && !diagramWorkspaceCollapsed) {
+                resizer.classList.add('hidden', 'md:flex');
+            }
+
+            if (window.innerWidth < 768) {
+                workspace.style.width = '';
+                return;
+            }
+            diagramWorkspaceWidth = clampDiagramWorkspaceWidth(diagramWorkspaceWidth);
+            workspace.style.width = `${diagramWorkspaceWidth}px`;
+        }
+
+        function setDiagramWorkspaceCollapsed(collapsed) {
+            diagramWorkspaceCollapsed = Boolean(collapsed);
+            if (diagramWorkspaceCollapsed) {
+                expandedDiagramId = null;
+            }
+            localStorage.setItem(DIAGRAM_WORKSPACE_STORAGE_KEY, diagramWorkspaceCollapsed ? 'true' : 'false');
+            const workspace = document.getElementById('diagramWorkspace');
+            const resizer = document.getElementById('diagramWorkspaceResizer');
+            const toggle = document.getElementById('diagramWorkspaceToggle');
+            if (!workspace) return;
+
+            workspace.classList.toggle('hidden', diagramWorkspaceCollapsed);
+            workspace.classList.toggle('flex', !diagramWorkspaceCollapsed);
+            if (resizer) {
+                if (diagramWorkspaceCollapsed) {
+                    resizer.classList.add('hidden');
+                    resizer.classList.remove('md:flex');
+                } else {
+                    resizer.classList.add('hidden', 'md:flex');
+                }
+            }
+            if (toggle) {
+                toggle.classList.toggle('bg-blue-500/20', !diagramWorkspaceCollapsed);
+                toggle.classList.toggle('border-blue-400/50', !diagramWorkspaceCollapsed);
+            }
+            applyDiagramWorkspaceWidth();
+            if (!diagramWorkspaceCollapsed) {
+                renderDiagramWorkspace();
+            }
+        }
+
+        function toggleDiagramWorkspace() {
+            setDiagramWorkspaceCollapsed(!diagramWorkspaceCollapsed);
+        }
+
+        function setNotebookDiagrams(diagrams = []) {
+            notebookDiagrams = Array.isArray(diagrams) ? diagrams : [];
+            if (notebookDiagrams.length === 0) {
+                activeDiagramId = null;
+                expandedDiagramId = null;
+            } else if (!activeDiagramId || !getDiagramById(activeDiagramId)) {
+                activeDiagramId = notebookDiagrams[0].id;
+            }
+            if (expandedDiagramId && !getDiagramById(expandedDiagramId)) {
+                expandedDiagramId = null;
+            }
+            renderDiagramWorkspace();
+        }
+
+        function upsertDiagram(diagram) {
+            if (!diagram || !diagram.id) return;
+            const existingIndex = notebookDiagrams.findIndex(item => String(item.id) === String(diagram.id));
+            if (existingIndex >= 0) {
+                notebookDiagrams.splice(existingIndex, 1, diagram);
+            } else {
+                notebookDiagrams.unshift(diagram);
+            }
+            activeDiagramId = diagram.id;
+            expandedDiagramId = null;
+            setDiagramWorkspaceCollapsed(false);
+            renderDiagramWorkspace();
+        }
+
+        function toggleDiagramPreview(diagramId) {
+            activeDiagramId = diagramId;
+            const shouldExpand = String(expandedDiagramId) !== String(diagramId);
+            expandedDiagramId = shouldExpand ? diagramId : null;
+            diagramPreviewScale = 1;
+            diagramPreviewBaseSize = null;
+            applyDiagramWorkspaceWidth();
+            renderDiagramWorkspace();
+        }
+
+        function collapseDiagramPreview() {
+            endDiagramPreviewPan();
+            expandedDiagramId = null;
+            diagramPreviewScale = 1;
+            diagramPreviewBaseSize = null;
+            applyDiagramWorkspaceWidth();
+            renderDiagramWorkspace();
+        }
+
+        function clampDiagramPreviewScale(scale) {
+            return Math.min(Math.max(scale, DIAGRAM_PREVIEW_MIN_SCALE), DIAGRAM_PREVIEW_MAX_SCALE);
+        }
+
+        function getDiagramSvgNaturalSize(svg) {
+            if (!svg) return null;
+            const viewBox = svg.viewBox?.baseVal;
+            if (viewBox && viewBox.width > 0 && viewBox.height > 0) {
+                return { width: viewBox.width, height: viewBox.height };
+            }
+
+            const widthAttr = parseFloat(svg.getAttribute('width') || '');
+            const heightAttr = parseFloat(svg.getAttribute('height') || '');
+            if (widthAttr > 0 && heightAttr > 0) {
+                return { width: widthAttr, height: heightAttr };
+            }
+
+            const box = svg.getBoundingClientRect();
+            if (box.width > 0 && box.height > 0) {
+                return { width: box.width, height: box.height };
+            }
+            return null;
+        }
+
+        function getDiagramPreviewSvg() {
+            return document.getElementById('diagramPreview')?.querySelector('svg') || null;
+        }
+
+        function getDiagramPanSurface() {
+            return document.getElementById('diagramPreview')?.querySelector('.diagram-pan-surface') || null;
+        }
+
+        function updateDiagramPanSurface() {
+            const preview = document.getElementById('diagramPreview');
+            const surface = getDiagramPanSurface();
+            if (!preview || !surface || !diagramPreviewBaseSize) return;
+
+            const renderedWidth = diagramPreviewBaseSize.width * diagramPreviewScale;
+            const renderedHeight = diagramPreviewBaseSize.height * diagramPreviewScale;
+            const extraX = Math.max(320, preview.clientWidth * 0.5);
+            const extraY = Math.max(240, preview.clientHeight * 0.35);
+            surface.style.width = `${Math.ceil(Math.max(preview.clientWidth, renderedWidth + extraX))}px`;
+            surface.style.minHeight = `${Math.ceil(Math.max(preview.clientHeight + extraY, renderedHeight + extraY))}px`;
+        }
+
+        function applyDiagramPreviewScale(scale, { center = false } = {}) {
+            const preview = document.getElementById('diagramPreview');
+            const svg = getDiagramPreviewSvg();
+            if (!preview || !svg || !diagramPreviewBaseSize) return;
+
+            diagramPreviewScale = clampDiagramPreviewScale(scale);
+            svg.style.width = `${Math.round(diagramPreviewBaseSize.width * diagramPreviewScale)}px`;
+            svg.style.height = 'auto';
+            svg.style.maxWidth = 'none';
+            updateDiagramPanSurface();
+
+            if (center) {
+                window.requestAnimationFrame(() => {
+                    preview.scrollLeft = Math.max(0, (preview.scrollWidth - preview.clientWidth) / 2);
+                    preview.scrollTop = Math.max(0, (preview.scrollHeight - preview.clientHeight) / 2);
+                });
+            }
+        }
+
+        function fitDiagramPreview() {
+            const preview = document.getElementById('diagramPreview');
+            const svg = getDiagramPreviewSvg();
+            if (!preview || !svg) return;
+
+            diagramPreviewBaseSize = getDiagramSvgNaturalSize(svg);
+            if (!diagramPreviewBaseSize) return;
+
+            const horizontalFit = (preview.clientWidth * 0.9) / diagramPreviewBaseSize.width;
+            const verticalFit = (preview.clientHeight * 0.82) / diagramPreviewBaseSize.height;
+            const fittedScale = Math.min(horizontalFit, verticalFit);
+            const readableScale = Math.max(fittedScale, DIAGRAM_PREVIEW_MIN_READABLE_SCALE);
+            const initialScale = Math.min(readableScale, DIAGRAM_PREVIEW_MAX_INITIAL_SCALE);
+            applyDiagramPreviewScale(initialScale, { center: true });
+        }
+
+        function zoomDiagramPreview(delta) {
+            applyDiagramPreviewScale(diagramPreviewScale + delta, { center: false });
+        }
+
+        function startDiagramPreviewPan(event) {
+            const preview = document.getElementById('diagramPreview');
+            if (!expandedDiagramId || !preview) return;
+            if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+            isDiagramPreviewPanning = true;
+            diagramPreviewPanStart = {
+                pointerId: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                scrollLeft: preview.scrollLeft,
+                scrollTop: preview.scrollTop
+            };
+            preview.classList.add('is-panning');
+            preview.setPointerCapture?.(event.pointerId);
+            document.body.style.userSelect = 'none';
+            event.preventDefault();
+        }
+
+        function moveDiagramPreviewPan(event) {
+            const preview = document.getElementById('diagramPreview');
+            if (!isDiagramPreviewPanning || !diagramPreviewPanStart || !preview) return;
+            if (event.pointerId !== diagramPreviewPanStart.pointerId) return;
+
+            preview.scrollLeft = diagramPreviewPanStart.scrollLeft - (event.clientX - diagramPreviewPanStart.x);
+            preview.scrollTop = diagramPreviewPanStart.scrollTop - (event.clientY - diagramPreviewPanStart.y);
+            event.preventDefault();
+        }
+
+        function endDiagramPreviewPan(event = null) {
+            const preview = document.getElementById('diagramPreview');
+            if (!isDiagramPreviewPanning) return;
+
+            if (event && preview && diagramPreviewPanStart?.pointerId === event.pointerId) {
+                preview.releasePointerCapture?.(event.pointerId);
+            }
+            isDiagramPreviewPanning = false;
+            diagramPreviewPanStart = null;
+            preview?.classList.remove('is-panning');
+            if (!isDiagramWorkspaceResizing) {
+                document.body.style.userSelect = '';
+            }
+        }
+
+        function renderDiagramListItem(diagram) {
+            const isExpanded = String(expandedDiagramId) === String(diagram.id);
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = [
+                'flex w-full items-center gap-3 border-t border-[#333] px-2 py-4 text-left transition first:border-t-0',
+                isExpanded ? 'text-white' : 'text-gray-300 hover:bg-[#25272c] hover:text-white'
+            ].join(' ');
+            item.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+            item.onclick = () => toggleDiagramPreview(diagram.id);
+
+            const icon = document.createElement('span');
+            icon.className = 'grid h-9 w-9 shrink-0 place-items-center text-blue-300';
+            icon.innerHTML = diagram.diagram_type === 'fishbone'
+                ? '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 12h15m-9-5 5 5-5 5M8 7l-4 5 4 5" /></svg>'
+                : '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 5.25h12M6 12h12M6 18.75h12M4.5 5.25h.01M4.5 12h.01M4.5 18.75h.01" /></svg>';
+
+            const textWrap = document.createElement('span');
+            textWrap.className = 'min-w-0 flex-1';
+
+            const title = document.createElement('span');
+            title.className = 'block truncate text-sm font-semibold';
+            title.textContent = diagram.title || getDiagramTypeLabel(diagram.diagram_type);
+
+            const meta = document.createElement('span');
+            meta.className = 'mt-0.5 block truncate text-xs text-gray-500';
+            meta.textContent = getDiagramMetaText(diagram);
+
+            const chevron = document.createElement('span');
+            chevron.className = [
+                'grid h-8 w-8 shrink-0 place-items-center rounded-full text-gray-500 transition',
+                isExpanded ? 'rotate-90 bg-[#30343b] text-gray-200' : 'hover:bg-[#30343b] hover:text-gray-200'
+            ].join(' ');
+            chevron.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="h-4 w-4"><path stroke-linecap="round" stroke-linejoin="round" d="m9 18 6-6-6-6" /></svg>';
+
+            textWrap.appendChild(title);
+            textWrap.appendChild(meta);
+            item.appendChild(icon);
+            item.appendChild(textWrap);
+            item.appendChild(chevron);
+            return item;
+        }
+
+        function renderDiagramWorkspace() {
+            const list = document.getElementById('diagramList');
+            const meta = document.getElementById('diagramWorkspaceMeta');
+            const previewPanel = document.getElementById('diagramPreviewPanel');
+            const actionPanel = document.getElementById('diagramActionPanel');
+            const workspaceBody = document.getElementById('diagramWorkspaceBody');
+            const preview = document.getElementById('diagramPreview');
+            const zoomControls = document.getElementById('diagramZoomControls');
+            if (!list || !meta || !previewPanel || !workspaceBody || !preview) return;
+
+            applyDiagramWorkspaceWidth();
+            endDiagramPreviewPan();
+
+            meta.textContent = notebookDiagrams.length
+                ? `${notebookDiagrams.length} 張圖表`
+                : '尚未產生圖表';
+            workspaceBody.className = 'flex-1 min-h-0 overflow-y-auto p-4 space-y-4';
+            previewPanel.className = 'hidden border border-[#333] bg-[#222428] rounded-lg overflow-hidden';
+            preview.className = 'diagram-preview overflow-x-auto bg-[#131314] p-4 text-sm text-gray-300';
+            if (actionPanel) actionPanel.classList.remove('hidden');
+            if (zoomControls) zoomControls.classList.add('hidden');
+            list.className = 'space-y-2';
+            list.innerHTML = '';
+
+            if (notebookDiagrams.length === 0) {
+                list.classList.remove('hidden');
+                const empty = document.createElement('div');
+                empty.className = 'rounded-lg border border-dashed border-[#444] p-4 text-sm leading-relaxed text-gray-500';
+                empty.textContent = '用上方的流程圖、魚骨圖按鈕，或直接在對話中要求畫圖。';
+                list.appendChild(empty);
+                previewPanel.classList.add('hidden');
+                return;
+            }
+
+            const activeDiagram = expandedDiagramId ? getDiagramById(expandedDiagramId) : null;
+            if (!activeDiagram) {
+                list.className = 'overflow-hidden border-y border-[#333]';
+                list.classList.remove('hidden');
+                notebookDiagrams.forEach(diagram => {
+                    list.appendChild(renderDiagramListItem(diagram));
+                });
+                previewPanel.classList.add('hidden');
+                return;
+            }
+
+            activeDiagramId = activeDiagram.id;
+            if (actionPanel) actionPanel.classList.add('hidden');
+            list.classList.add('hidden');
+            workspaceBody.className = 'flex flex-1 min-h-0 flex-col overflow-hidden p-0';
+            previewPanel.className = 'relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[#1e1f22]';
+            preview.className = 'diagram-preview diagram-preview-expanded flex-1 min-h-0 overflow-auto bg-[#1e1f22] text-sm text-gray-300';
+            if (zoomControls) zoomControls.classList.remove('hidden');
+            previewPanel.classList.remove('hidden');
+            document.getElementById('diagramPreviewTitle').textContent = activeDiagram.title || getDiagramTypeLabel(activeDiagram.diagram_type);
+            document.getElementById('diagramPreviewSubtitle').textContent = `${getDiagramTypeLabel(activeDiagram.diagram_type)} · ${getDiagramMetaText(activeDiagram)}`;
+            renderMermaidPreview(activeDiagram);
+        }
+
+        function getRenderableMermaidCode(diagram) {
+            const code = diagram?.mermaid_code || '';
+            if (diagram?.diagram_type !== 'flowchart') return code;
+            return code.replace(/^(\s*(?:flowchart|graph)\s+)(TD|TB)\b/i, '$1LR');
+        }
+
+        async function renderMermaidPreview(diagram) {
+            const preview = document.getElementById('diagramPreview');
+            const codePreview = document.getElementById('diagramCodePreview');
+            if (!preview || !codePreview || !diagram) return;
+
+            const code = getRenderableMermaidCode(diagram);
+            codePreview.textContent = code;
+            codePreview.classList.add('hidden');
+            diagramPreviewScale = 1;
+            diagramPreviewBaseSize = null;
+            preview.innerHTML = '<div class="text-sm text-gray-500">正在渲染圖表...</div>';
+
+            if (!window.mermaid) {
+                preview.innerHTML = '<div class="text-sm text-amber-200">Mermaid 載入失敗，已顯示原始碼。</div>';
+                codePreview.classList.remove('hidden');
+                return;
+            }
+
+            const renderToken = `diagram-${diagram.id}-${Date.now()}`;
+            preview.dataset.renderToken = renderToken;
+            try {
+                const result = await mermaid.render(renderToken, code);
+                if (preview.dataset.renderToken !== renderToken) return;
+                preview.innerHTML = `<div class="diagram-pan-surface">${result.svg}</div>`;
+                window.requestAnimationFrame(() => fitDiagramPreview());
+            } catch (error) {
+                preview.innerHTML = `<div class="text-sm leading-relaxed text-amber-200">Mermaid 渲染失敗，請檢查原始碼。</div>`;
+                codePreview.classList.remove('hidden');
+            }
+        }
+
+        async function copyActiveDiagramCode() {
+            const diagram = getDiagramById(activeDiagramId);
+            if (!diagram) return;
+            try {
+                await navigator.clipboard.writeText(diagram.mermaid_code || '');
+                showToast({ tone: 'success', title: '已複製 Mermaid 原始碼' });
+            } catch (error) {
+                showToast({ tone: 'error', title: '複製失敗', message: '瀏覽器目前無法使用剪貼簿。' });
+            }
+        }
+
+        async function deleteActiveDiagram() {
+            const diagram = getDiagramById(activeDiagramId);
+            if (!diagram || !currentNotebookId) return;
+            try {
+                const res = await fetch(`/api/notebooks/${currentNotebookId}/diagrams/${diagram.id}`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || '刪除圖表失敗');
+                }
+                notebookDiagrams = notebookDiagrams.filter(item => String(item.id) !== String(diagram.id));
+                activeDiagramId = notebookDiagrams[0]?.id || null;
+                if (String(expandedDiagramId) === String(diagram.id)) {
+                    expandedDiagramId = null;
+                }
+                renderDiagramWorkspace();
+                showToast({ tone: 'success', title: '圖表已刪除' });
+            } catch (error) {
+                showToast({ tone: 'error', title: '刪除失敗', message: error.message || '請稍後再試。' });
+            }
         }
 
         function openSettingsModal() {
@@ -1257,6 +1930,7 @@
             // 清空來源列表與對話紀錄 
             document.getElementById('sourcesList').innerHTML = '';
             renderSuggestedQuestions([]);
+            setNotebookDiagrams([]);
             const chatHistory = document.getElementById('chatHistory');
             chatHistory.innerHTML = '';
 
@@ -1288,6 +1962,7 @@
                         `;
                     }
                     renderSuggestedQuestions(data.suggested_questions || []);
+                    setNotebookDiagrams(data.diagrams || []);
                 }
             } catch (err) {
                 console.error("讀取歷史紀錄失敗", err);
@@ -1295,12 +1970,14 @@
 
             document.getElementById('dashboard-view').classList.add('hidden');
             document.getElementById('workspace-view').classList.remove('hidden');
+            setDiagramWorkspaceCollapsed(diagramWorkspaceCollapsed);
         }
 
         // 回到首頁
         function goBackToDashboard() {
             currentNotebookId = null;
             renderSuggestedQuestions([]);
+            setNotebookDiagrams([]);
             closeTranscriptModal();
             document.getElementById('workspace-view').classList.add('hidden');
             document.getElementById('dashboard-view').classList.remove('hidden');
@@ -2317,9 +2994,14 @@
             }
         }
 
-        async function askQuestion(presetQuestion = null) {
+        async function askQuestion(presetQuestion = null, diagramType = null) {
             if (!currentNotebookId) return;
-            const question = (presetQuestion || inputEl.value).trim();
+            let question = (presetQuestion || inputEl.value).trim();
+            if (!question && diagramType) {
+                question = diagramType === 'fishbone'
+                    ? '請根據目前筆記本知識生成魚骨圖'
+                    : '請根據目前筆記本知識生成流程圖';
+            }
 
             if (!question || activeQuestionController) return;
 
@@ -2348,7 +3030,9 @@
                     body: JSON.stringify({
                         question: question,
                         notebook_id: currentNotebookId, // 傳送當前筆記本 ID
-                        llm_provider: currentLlmProvider
+                        llm_provider: currentLlmProvider,
+                        response_mode: diagramType ? 'diagram' : 'auto',
+                        diagram_type: diagramType
                     })
                 });
                 const data = await response.json();
@@ -2357,8 +3041,13 @@
                 removeLoadingMessage(loadingId);
 
                 if (data.status === 'success') {
-                    const references = data.answerable === false ? [] : (data.references || []);
-                    appendMessage('AI', data.answer, null, false, references);
+                    if (data.response_type === 'diagram' && data.diagram) {
+                        upsertDiagram(data.diagram);
+                        appendMessage('AI', data.answer || '已產生圖表，請在右側圖表工作區查看。', null, false, data.references || []);
+                    } else {
+                        const references = data.answerable === false ? [] : (data.references || []);
+                        appendMessage('AI', data.answer, null, false, references);
+                    }
                 } else {
                     appendMessage('AI', '❌ 系統發生錯誤：' + (data.message || '未知錯誤'));
                 }
@@ -2447,6 +3136,49 @@
                 isResizing = false;
                 document.body.style.cursor = '';
                 document.body.style.userSelect = '';
+            }
+        });
+
+        const diagramWorkspaceResizer = document.getElementById('diagramWorkspaceResizer');
+        const diagramWorkspace = document.getElementById('diagramWorkspace');
+        const diagramPreview = document.getElementById('diagramPreview');
+
+        if (diagramPreview) {
+            diagramPreview.addEventListener('pointerdown', startDiagramPreviewPan);
+            diagramPreview.addEventListener('pointermove', moveDiagramPreviewPan);
+            diagramPreview.addEventListener('pointerup', endDiagramPreviewPan);
+            diagramPreview.addEventListener('pointercancel', endDiagramPreviewPan);
+        }
+
+        diagramWorkspaceResizer.addEventListener('mousedown', function (e) {
+            if (window.innerWidth < 768 || expandedDiagramId) return;
+            e.preventDefault();
+            isDiagramWorkspaceResizing = true;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', function (e) {
+            if (!isDiagramWorkspaceResizing || !diagramWorkspace || expandedDiagramId) return;
+            diagramWorkspaceWidth = clampDiagramWorkspaceWidth(window.innerWidth - e.clientX);
+            diagramWorkspace.style.width = `${diagramWorkspaceWidth}px`;
+        });
+
+        document.addEventListener('mouseup', function (e) {
+            if (isDiagramWorkspaceResizing) {
+                isDiagramWorkspaceResizing = false;
+                localStorage.setItem(DIAGRAM_WORKSPACE_WIDTH_STORAGE_KEY, String(Math.round(diagramWorkspaceWidth)));
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+
+        window.addEventListener('resize', function () {
+            if (!diagramWorkspaceCollapsed) {
+                applyDiagramWorkspaceWidth();
+                if (expandedDiagramId) {
+                    window.requestAnimationFrame(() => fitDiagramPreview());
+                }
             }
         });
     </script>

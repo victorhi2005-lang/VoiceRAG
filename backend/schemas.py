@@ -26,3 +26,11 @@ class QuestionRequest(BaseModel):
     notebook_id: str
     question: str
     llm_provider: str | None = None
+    response_mode: Literal["auto", "answer", "diagram"] = "auto"
+    diagram_type: Literal["flowchart", "fishbone"] | None = None
+
+
+class DiagramRequest(BaseModel):
+    prompt: str
+    diagram_type: Literal["flowchart", "fishbone"]
+    llm_provider: str | None = None

@@ -83,6 +83,20 @@ def init_db():
     suggested_question_columns = [row[1] for row in cursor.fetchall()]
     if "used" not in suggested_question_columns:
         cursor.execute("ALTER TABLE suggested_questions ADD COLUMN used INTEGER DEFAULT 0")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS diagrams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notebook_id TEXT,
+            title TEXT,
+            diagram_type TEXT,
+            prompt TEXT,
+            mermaid_code TEXT,
+            references_json TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -213,9 +227,103 @@ def get_notebook_details_data(notebook_id):
         {"id": r[0], "question": r[1], "priority": r[2], "source_filename": r[3], "created_at": r[4]}
         for r in cursor.fetchall()
     ]
+    diagrams = get_diagrams_data(notebook_id, conn)
 
     conn.close()
-    return {"sources": sources, "messages": messages, "suggested_questions": suggested_questions}
+    return {
+        "sources": sources,
+        "messages": messages,
+        "suggested_questions": suggested_questions,
+        "diagrams": diagrams,
+    }
+
+
+def parse_references_json(references_json):
+    if not references_json:
+        return []
+    try:
+        references = json.loads(references_json)
+        return references if isinstance(references, list) else []
+    except Exception:
+        return []
+
+
+def get_diagrams_data(notebook_id, conn=None):
+    should_close = conn is None
+    conn = conn or get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, title, diagram_type, prompt, mermaid_code, references_json, created_at, updated_at
+        FROM diagrams
+        WHERE notebook_id = ?
+        ORDER BY updated_at DESC, id DESC
+        """,
+        (notebook_id,)
+    )
+    diagrams = [
+        {
+            "id": row[0],
+            "title": row[1],
+            "diagram_type": row[2],
+            "prompt": row[3],
+            "mermaid_code": row[4],
+            "references": parse_references_json(row[5]),
+            "created_at": row[6],
+            "updated_at": row[7],
+        }
+        for row in cursor.fetchall()
+    ]
+    if should_close:
+        conn.close()
+    return diagrams
+
+
+def insert_diagram_record(notebook_id, title, diagram_type, prompt, mermaid_code, references=None):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    references_json = json.dumps(references or [], ensure_ascii=False)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO diagrams
+            (notebook_id, title, diagram_type, prompt, mermaid_code, references_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (notebook_id, title, diagram_type, prompt, mermaid_code, references_json, now, now)
+    )
+    diagram_id = cursor.lastrowid
+    cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
+    conn.commit()
+    conn.close()
+    return {
+        "id": diagram_id,
+        "title": title,
+        "diagram_type": diagram_type,
+        "prompt": prompt,
+        "mermaid_code": mermaid_code,
+        "references": references or [],
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def delete_diagram_record(notebook_id, diagram_id):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM diagrams WHERE id = ? AND notebook_id = ?",
+        (diagram_id, notebook_id)
+    )
+    deleted = cursor.rowcount > 0
+    if deleted:
+        cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
+    conn.commit()
+    conn.close()
+    if not deleted:
+        return None
+    return {"id": diagram_id, "updated_at": now}
 
 
 def mark_suggested_question_used_record(notebook_id, question_id):
@@ -548,12 +656,13 @@ def clear_all_records():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.execute("DELETE FROM diagrams")
     cursor.execute("DELETE FROM suggested_questions")
     cursor.execute("DELETE FROM messages")
     cursor.execute("DELETE FROM sources")
     cursor.execute("DELETE FROM notebooks")
     cursor.execute(
-        "DELETE FROM sqlite_sequence WHERE name IN ('messages', 'suggested_questions')"
+        "DELETE FROM sqlite_sequence WHERE name IN ('messages', 'suggested_questions', 'diagrams')"
     )
     conn.commit()
     conn.close()
