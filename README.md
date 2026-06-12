@@ -260,10 +260,13 @@ Copy-Item .env.example .env
 ```env
 VOICERAG_DEFAULT_LLM_PROVIDER=ollama
 OLLAMA_LLM_MODEL=qwen3.5:9b-q4_K_M
+VOICERAG_FORCE_LOCAL_MODELS=1
 DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_API_KEY=填入你的API_KEY
 ```
+
+`VOICERAG_FORCE_LOCAL_MODELS=1` 代表 Whisper、Embedding 與 Reranker 只會從本機快取載入模型，不會自動連線到 Hugging Face 下載。若第一次安裝時需要下載模型，可暫時設為 `0`，下載完成後再改回 `1`。
 
 若只使用本地 Ollama，可以先不填 DeepSeek API Key；若要使用 DeepSeek，請把 `填入你的API_KEY` 換成自己的 DeepSeek API Key。使用 DeepSeek 時，摘要、分析或問答需要的文字內容會送到 DeepSeek API。
 

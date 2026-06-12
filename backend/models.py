@@ -1,7 +1,27 @@
 import gc
 import os
 import threading
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+
+BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / ".env"
+load_dotenv(ENV_PATH, override=False)
+
+
+def _is_enabled_env(name: str, default: str = "1") -> bool:
+    return os.getenv(name, default).strip().lower() not in {"0", "false", "no", "off"}
+
+
+FORCE_LOCAL_MODEL_FILES = _is_enabled_env("VOICERAG_FORCE_LOCAL_MODELS")
+
+if FORCE_LOCAL_MODEL_FILES:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 from sentence_transformers import CrossEncoder, SentenceTransformer
 from faster_whisper import BatchedInferencePipeline, WhisperModel
@@ -43,6 +63,21 @@ _base_whisper_model: WhisperModel | None = None
 _whisper_model: BatchedInferencePipeline | None = None
 
 
+def _model_loading_mode() -> str:
+    if FORCE_LOCAL_MODEL_FILES:
+        return "local cache only"
+    return "local cache or online download"
+
+
+def _local_model_error(model_name: str, error: Exception) -> RuntimeError:
+    return RuntimeError(
+        f"Unable to load model {model_name} from local files. "
+        "VOICERAG_FORCE_LOCAL_MODELS=1 forces local cache loading and blocks "
+        "Hugging Face downloads. Download the model once with network access, "
+        f"or check that the Hugging Face cache still exists. Original error: {error}"
+    )
+
+
 def _torch_model_kwargs(device: str) -> dict[str, Any]:
     if device.startswith("cuda"):
         return {"torch_dtype": torch.float16}
@@ -67,14 +102,19 @@ def get_embeddings_model() -> SentenceTransformer:
     with _model_lock:
         if _embeddings_model is None:
             print(
-                f"Loading embedding model ({EMBEDDING_MODEL_NAME}) on {EMBEDDING_DEVICE}...",
+                f"Loading embedding model ({EMBEDDING_MODEL_NAME}) on {EMBEDDING_DEVICE} "
+                f"({_model_loading_mode()})...",
                 flush=True,
             )
-            _embeddings_model = SentenceTransformer(
-                EMBEDDING_MODEL_NAME,
-                device=EMBEDDING_DEVICE,
-                model_kwargs=_torch_model_kwargs(EMBEDDING_DEVICE),
-            )
+            try:
+                _embeddings_model = SentenceTransformer(
+                    EMBEDDING_MODEL_NAME,
+                    device=EMBEDDING_DEVICE,
+                    model_kwargs=_torch_model_kwargs(EMBEDDING_DEVICE),
+                    local_files_only=FORCE_LOCAL_MODEL_FILES,
+                )
+            except Exception as error:
+                raise _local_model_error(EMBEDDING_MODEL_NAME, error) from error
         return _embeddings_model
 
 
@@ -84,14 +124,19 @@ def get_reranker() -> CrossEncoder:
     with _model_lock:
         if _reranker is None:
             print(
-                f"Loading reranker model ({RERANKER_MODEL_NAME}) on {RERANKER_DEVICE}...",
+                f"Loading reranker model ({RERANKER_MODEL_NAME}) on {RERANKER_DEVICE} "
+                f"({_model_loading_mode()})...",
                 flush=True,
             )
-            _reranker = CrossEncoder(
-                RERANKER_MODEL_NAME,
-                device=RERANKER_DEVICE,
-                model_kwargs=_torch_model_kwargs(RERANKER_DEVICE),
-            )
+            try:
+                _reranker = CrossEncoder(
+                    RERANKER_MODEL_NAME,
+                    device=RERANKER_DEVICE,
+                    model_kwargs=_torch_model_kwargs(RERANKER_DEVICE),
+                    local_files_only=FORCE_LOCAL_MODEL_FILES,
+                )
+            except Exception as error:
+                raise _local_model_error(RERANKER_MODEL_NAME, error) from error
         return _reranker
 
 
@@ -136,14 +181,19 @@ def get_whisper_model() -> BatchedInferencePipeline:
     with _model_lock:
         if _whisper_model is None:
             print(
-                f"Loading Whisper model ({WHISPER_MODEL_NAME}) on {WHISPER_DEVICE}...",
+                f"Loading Whisper model ({WHISPER_MODEL_NAME}) on {WHISPER_DEVICE} "
+                f"({_model_loading_mode()})...",
                 flush=True,
             )
-            _base_whisper_model = WhisperModel(
-                WHISPER_MODEL_NAME,
-                device=WHISPER_DEVICE,
-                compute_type=WHISPER_COMPUTE_TYPE,
-            )
+            try:
+                _base_whisper_model = WhisperModel(
+                    WHISPER_MODEL_NAME,
+                    device=WHISPER_DEVICE,
+                    compute_type=WHISPER_COMPUTE_TYPE,
+                    local_files_only=FORCE_LOCAL_MODEL_FILES,
+                )
+            except Exception as error:
+                raise _local_model_error(WHISPER_MODEL_NAME, error) from error
             _whisper_model = BatchedInferencePipeline(model=_base_whisper_model)
         return _whisper_model
 
