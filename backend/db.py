@@ -91,12 +91,17 @@ def init_db():
             diagram_type TEXT,
             prompt TEXT,
             mermaid_code TEXT,
+            diagram_data_json TEXT,
             references_json TEXT,
             created_at TEXT,
             updated_at TEXT,
             FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
         )
     ''')
+    cursor.execute("PRAGMA table_info(diagrams)")
+    diagram_columns = [row[1] for row in cursor.fetchall()]
+    if "diagram_data_json" not in diagram_columns:
+        cursor.execute("ALTER TABLE diagrams ADD COLUMN diagram_data_json TEXT")
     conn.commit()
     conn.close()
 
@@ -248,13 +253,23 @@ def parse_references_json(references_json):
         return []
 
 
+def parse_diagram_data_json(diagram_data_json):
+    if not diagram_data_json:
+        return None
+    try:
+        diagram_data = json.loads(diagram_data_json)
+        return diagram_data if isinstance(diagram_data, dict) else None
+    except Exception:
+        return None
+
+
 def get_diagrams_data(notebook_id, conn=None):
     should_close = conn is None
     conn = conn or get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, title, diagram_type, prompt, mermaid_code, references_json, created_at, updated_at
+        SELECT id, title, diagram_type, prompt, mermaid_code, diagram_data_json, references_json, created_at, updated_at
         FROM diagrams
         WHERE notebook_id = ?
         ORDER BY updated_at DESC, id DESC
@@ -268,9 +283,10 @@ def get_diagrams_data(notebook_id, conn=None):
             "diagram_type": row[2],
             "prompt": row[3],
             "mermaid_code": row[4],
-            "references": parse_references_json(row[5]),
-            "created_at": row[6],
-            "updated_at": row[7],
+            "diagram_data": parse_diagram_data_json(row[5]),
+            "references": parse_references_json(row[6]),
+            "created_at": row[7],
+            "updated_at": row[8],
         }
         for row in cursor.fetchall()
     ]
@@ -279,18 +295,19 @@ def get_diagrams_data(notebook_id, conn=None):
     return diagrams
 
 
-def insert_diagram_record(notebook_id, title, diagram_type, prompt, mermaid_code, references=None):
+def insert_diagram_record(notebook_id, title, diagram_type, prompt, mermaid_code, references=None, diagram_data=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     references_json = json.dumps(references or [], ensure_ascii=False)
+    diagram_data_json = json.dumps(diagram_data, ensure_ascii=False) if isinstance(diagram_data, dict) else None
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO diagrams
-            (notebook_id, title, diagram_type, prompt, mermaid_code, references_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (notebook_id, title, diagram_type, prompt, mermaid_code, diagram_data_json, references_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (notebook_id, title, diagram_type, prompt, mermaid_code, references_json, now, now)
+        (notebook_id, title, diagram_type, prompt, mermaid_code, diagram_data_json, references_json, now, now)
     )
     diagram_id = cursor.lastrowid
     cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
@@ -302,6 +319,7 @@ def insert_diagram_record(notebook_id, title, diagram_type, prompt, mermaid_code
         "diagram_type": diagram_type,
         "prompt": prompt,
         "mermaid_code": mermaid_code,
+        "diagram_data": diagram_data if isinstance(diagram_data, dict) else None,
         "references": references or [],
         "created_at": now,
         "updated_at": now,
