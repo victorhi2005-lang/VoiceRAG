@@ -793,7 +793,13 @@ def reanalyze_source_data(notebook_id, source_id, llm_provider=None):
 
     try:
         timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
-        analysis = build_source_analysis(filename, transcript_text, timed_segments, llm_provider)
+        analysis = build_source_analysis(
+            filename,
+            transcript_text,
+            timed_segments,
+            llm_provider,
+            source_type=source_type or "audio",
+        )
         analysis_chunk_count = index_source_analysis_documents(
             notebook_id,
             source_id,

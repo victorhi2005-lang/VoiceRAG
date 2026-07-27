@@ -388,7 +388,19 @@ def build_chapter_inputs(
     ]
 
 
-def generate_short_summary(transcript_text: str, llm_provider: str | None = None) -> str:
+def get_analysis_source_labels(source_type: str | None) -> tuple[str, str]:
+    """Return the names used in analysis prompts for an audio or document source."""
+    if source_type == "document":
+        return "文件", "文件內容"
+    return "錄音", "錄音逐字稿"
+
+
+def generate_short_summary(
+    transcript_text: str,
+    llm_provider: str | None = None,
+    source_type: str = "audio",
+) -> str:
+    source_kind, source_content_label = get_analysis_source_labels(source_type)
     prompt = f"""
 你是一個專業的 AI 知識分析助手。請閱讀以下來源內容，
 進行深入的訊息分析，並給出一份精煉的「整體重點摘要」。
@@ -396,7 +408,7 @@ def generate_short_summary(transcript_text: str, llm_provider: str | None = None
 輸出格式請嚴格遵守：
 【整體重點摘要】
 
-接著只寫一段流暢的摘要文字，幫助讀者快速掌握整段語音的精華。
+接著只寫一段流暢的摘要文字，幫助讀者快速掌握整份{source_kind}的精華。
 
 規則：
 1. 請務必使用繁體中文。
@@ -405,19 +417,24 @@ def generate_short_summary(transcript_text: str, llm_provider: str | None = None
 4. 不要輸出「核心主題」、「深度解析」、「重要細節」、「分段重點」等額外區塊。
 5. 不要輸出 Markdown 標題。
 
-來源內容：
+{source_content_label}：
 {transcript_text}
 """
     return generate_text(prompt, llm_provider)
 
 
-def generate_quick_analysis_with_llm(transcript_text: str, llm_provider: str | None = None) -> dict[str, Any]:
+def generate_quick_analysis_with_llm(
+    transcript_text: str,
+    llm_provider: str | None = None,
+    source_type: str = "audio",
+) -> dict[str, Any]:
+    source_kind, source_content_label = get_analysis_source_labels(source_type)
     prompt = f"""
 你是一個專業的 AI 知識分析助手。請閱讀以下來源內容，產生快速知識整理，並只輸出 JSON 物件。
 
 JSON 欄位固定如下：
 {{
-  "overall_title": "整份錄音標題，12 字以內",
+  "overall_title": "整份{source_kind}標題，12 字以內",
   "overview": "整體重點摘要，使用繁體中文，3 到 5 句",
   "suggested_questions": ["推薦問題一？", "推薦問題二？", "推薦問題三？"]
 }}
@@ -425,10 +442,10 @@ JSON 欄位固定如下：
 規則：
 1. 必須使用繁體中文。
 2. 不要輸出 Markdown，不要輸出 JSON 以外的文字。
-3. 摘要要能幫助使用者快速掌握整段語音的精華。
+3. 摘要要能幫助使用者快速掌握整份{source_kind}的精華。
 4. 推薦問題最多 3 題；如果內容太短或資訊不足，suggested_questions 請輸出空陣列。
 
-來源內容：
+{source_content_label}：
 {transcript_text}
 """
     response_text = generate_text(prompt, llm_provider)
@@ -494,7 +511,12 @@ def analyze_chapters_with_limited_concurrency(
         ))
 
 
-def generate_global_analysis(chapters: list[dict[str, Any]], llm_provider: str | None = None) -> dict[str, Any]:
+def generate_global_analysis(
+    chapters: list[dict[str, Any]],
+    llm_provider: str | None = None,
+    source_type: str = "audio",
+) -> dict[str, Any]:
+    source_kind, _ = get_analysis_source_labels(source_type)
     chapter_payload = [
         {
             "index": chapter["index"],
@@ -507,11 +529,11 @@ def generate_global_analysis(chapters: list[dict[str, Any]], llm_provider: str |
         for chapter in chapters
     ]
     prompt = f"""
-你是一個 NotebookLM 風格的知識摘要助手。請根據多個段落分析結果，產生整份錄音的全局理解，並只輸出 JSON 物件。
+你是一個 NotebookLM 風格的知識摘要助手。請根據多個段落分析結果，產生整份{source_kind}的全局理解，並只輸出 JSON 物件。
 
 JSON 欄位固定如下：
 {{
-  "overall_title": "整份錄音標題",
+  "overall_title": "整份{source_kind}標題",
   "overview": "整體摘要，3 到 5 句",
   "core_themes": ["核心主題一", "核心主題二", "核心主題三"],
   "deep_insights": ["深度解析一", "深度解析二", "深度解析三"],
@@ -531,7 +553,7 @@ JSON 欄位固定如下：
     response_text = generate_text(prompt, llm_provider)
     parsed = extract_json_object(response_text)
     return {
-        "overall_title": str(parsed.get("overall_title") or "錄音重點摘要").strip(),
+        "overall_title": str(parsed.get("overall_title") or f"{source_kind}重點摘要").strip(),
         "overview": str(parsed.get("overview") or response_text).strip(),
         "core_themes": normalize_text_list(parsed.get("core_themes"), limit=5),
         "deep_insights": normalize_text_list(parsed.get("deep_insights"), limit=5),
@@ -554,19 +576,21 @@ def build_source_analysis(
     transcript_text: str,
     timed_segments: list[dict[str, Any]],
     llm_provider: str | None = None,
+    source_type: str = "audio",
 ) -> dict[str, Any]:
     llm_provider = normalize_llm_provider(llm_provider)
+    source_type = "document" if source_type == "document" else "audio"
     mode = "deep" if should_use_deep_analysis(transcript_text, timed_segments) else "quick"
     duration_seconds = get_transcript_duration(timed_segments)
 
     if mode == "quick":
         if is_deepseek_provider(llm_provider):
-            quick_analysis = generate_quick_analysis_with_llm(transcript_text, llm_provider)
+            quick_analysis = generate_quick_analysis_with_llm(transcript_text, llm_provider, source_type)
             summary = str(quick_analysis.get("overview") or "").strip()
             suggested_questions = normalize_text_list(quick_analysis.get("suggested_questions"), limit=3)
             overall_title = str(quick_analysis.get("overall_title") or "重點摘要").strip()
         else:
-            summary = generate_short_summary(transcript_text, llm_provider)
+            summary = generate_short_summary(transcript_text, llm_provider, source_type)
             suggested_questions = generate_suggested_questions(transcript_text, llm_provider)
             overall_title = "重點摘要"
         analysis = {
@@ -590,7 +614,7 @@ def build_source_analysis(
 
     chapter_inputs = build_chapter_inputs(transcript_text, timed_segments, llm_provider)
     chapters = analyze_chapters_with_limited_concurrency(chapter_inputs, llm_provider)
-    global_summary = generate_global_analysis(chapters, llm_provider)
+    global_summary = generate_global_analysis(chapters, llm_provider, source_type)
     suggested_questions = normalize_text_list(global_summary.get("suggested_questions"), limit=3)
     if not suggested_questions:
         suggested_questions = normalize_text_list(
