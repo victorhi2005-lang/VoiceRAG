@@ -17,11 +17,19 @@ from db import (
     get_notebook_details_data,
     get_notebooks_data,
     get_source_transcript_data,
+    get_source_content_data,
     init_db,
     mark_suggested_question_used_record,
     update_notebook_name,
 )
-from schemas import DiagramRequest, NotebookUpdate, QuestionRequest, SourceFilenameUpdate, TranscriptAiEditRequest, TranscriptUpdateRequest
+from schemas import (
+    DiagramRequest,
+    NotebookUpdate,
+    QuestionRequest,
+    SourceFilenameUpdate,
+    TranscriptAiEditRequest,
+    TranscriptUpdateRequest,
+)
 from models import preload_models_for_provider
 from llm_service import get_default_llm_provider, normalize_llm_provider
 
@@ -54,6 +62,13 @@ from audio_service import (
     reanalyze_source_data,
     rename_source_filename,
     suggest_source_filename,
+)
+from document_service import (
+    DocumentProcessingError,
+    get_document_delivery_options,
+    get_document_file_path,
+    is_supported_document,
+    process_document_upload,
 )
 from llm_service import get_llm_provider_config, stop_llm_generation
 from diagram_service import detect_requested_diagram_type, generate_notebook_diagram
@@ -185,6 +200,36 @@ async def get_source_audio(notebook_id: str, source_id: str):
     return FileResponse(audio["path"], filename=audio["filename"])
 
 
+@app.get("/api/notebooks/{notebook_id}/sources/{source_id}/file")
+async def get_source_file(notebook_id: str, source_id: str):
+    document = get_document_file_path(notebook_id, source_id)
+    if document:
+        media_type, disposition = get_document_delivery_options(
+            document["filename"],
+            document.get("mime_type"),
+            Path(document["path"]),
+        )
+        return FileResponse(
+            document["path"],
+            filename=document["filename"],
+            media_type=media_type,
+            content_disposition_type=disposition,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+    audio = get_audio_file_path(notebook_id, source_id)
+    if audio:
+        return FileResponse(audio["path"], filename=audio["filename"])
+    raise HTTPException(status_code=404, detail="找不到來源原始檔")
+
+
+@app.get("/api/notebooks/{notebook_id}/sources/{source_id}/content")
+async def get_source_content(notebook_id: str, source_id: str):
+    source = get_source_content_data(notebook_id, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="找不到指定來源")
+    return {"status": "success", "source": source}
+
+
 @app.delete("/api/notebooks/{notebook_id}/sources/{source_id}")
 async def delete_source(notebook_id: str, source_id: str):
     result = delete_source_data(notebook_id, source_id)
@@ -251,6 +296,38 @@ async def upload_audio(
     llm_provider: str | None = Form(None)
 ):
     return process_audio_upload(notebook_id, file, auto_filename, fallback_filename, llm_provider)
+
+
+@app.post("/upload-source/")
+async def upload_source(
+    notebook_id: str = Form(...),
+    file: UploadFile = File(...),
+    auto_filename: bool = Form(False),
+    fallback_filename: str | None = Form(None),
+    llm_provider: str | None = Form(None),
+):
+    try:
+        if is_supported_document(file.filename):
+            return process_document_upload(notebook_id, file, llm_provider)
+
+        extension = Path(file.filename or "").suffix.lower()
+        supported_audio = {".mp3", ".m4a", ".wav", ".webm", ".ogg", ".mp4"}
+        if extension not in supported_audio and not (file.content_type or "").startswith("audio/"):
+            return {
+                "status": "error",
+                "message": "不支援此來源格式。請上傳音檔、PDF、DOCX、TXT 或 MD。",
+            }
+        return process_audio_upload(
+            notebook_id,
+            file,
+            auto_filename,
+            fallback_filename,
+            llm_provider,
+        )
+    except DocumentProcessingError as error:
+        return {"status": "error", "message": str(error)}
+    except Exception as error:
+        return {"status": "error", "message": f"來源處理失敗：{error}"}
 
 
 @app.post("/ask-question/")

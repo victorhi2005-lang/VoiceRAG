@@ -15,10 +15,11 @@
 
 ## 專案總覽
 
-VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的 AI 知識庫。系統聚焦三件事：保存口述知識、提升檢索效率，並讓 AI 回答能回到原始來源。
+VoiceRAG 將口述錄音與文件轉換為可查詢、可追溯、可長期保存的 AI 知識庫。系統聚焦三件事：保存知識、提升檢索效率，並讓 AI 回答能回到原始來源。
 
 ```
 口述錄音 → Whisper 語音轉文字 → AI 摘要整理 → 切分與向量化 → 向量知識庫 → RAG 智慧問答
+PDF / DOCX / TXT / MD → 文字與表格抽取 → 固定位置切分 → 向量知識庫 → RAG 智慧問答
 ```
 
 **核心特色：**
@@ -28,6 +29,7 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的 AI �
 - **LLM Provider 可切換**：預設使用 Ollama，也可選用 DeepSeek 進行摘要與問答
 - **多輪對話**：自動帶入歷史上下文，支援追問與連續提問
 - **來源引用追溯**：AI 回答附帶具體引用來源，可追溯至原始音檔
+- **文件來源**：支援 PDF、DOCX、TXT、MD；PDF 引用頁碼，其他格式引用標題、段落或行號
 
 > 隱私提醒：若選擇 DeepSeek provider，摘要、分析或問答所需的文字內容會送往 DeepSeek API；若需要全本地處理，請維持使用 Ollama provider。
 
@@ -60,6 +62,7 @@ VoiceRAG 將口述錄音轉換為可查詢、可追溯、可長期保存的 AI �
 | `models.py` | Embedding、Reranker、Whisper 載入與 GPU 記憶體管理 |
 | `llm_service.py` | Ollama / DeepSeek provider 設定、文字生成與停止生成 |
 | `audio_service.py` | 音檔儲存、轉錄、摘要、檔名建議、來源刪除與資料一致性檢查 |
+| `document_service.py` | 文件驗證、原檔儲存、文字與表格抽取、固定位置區塊 |
 | `rag_service.py` | 語意切分、ChromaDB 索引、混合檢索、Reranker、問答與引用過濾 |
 | `schemas.py` | Pydantic 請求資料模型 |
 
@@ -120,6 +123,13 @@ flowchart LR
 - 網頁端直接錄音，錄音完成自動上傳處理
 - 可選擇自動命名，AI 會依據逐字稿或分析內容產生較容易辨識的來源檔名
 
+### 文件來源
+- 支援單檔上傳 PDF、DOCX、TXT、MD，單檔上限 50 MB
+- PDF 逐頁抽取；DOCX 依標題/段落；TXT、MD 依行號建立可追溯位置
+- 點擊文件名稱可開啟原檔；回答引用會顯示唯讀證據內容並定位固定位置區塊
+- 文件抽取內容不可在知識庫內修改；需要更新時請修改原始文件後重新上傳
+- 支援可抽取的表格文字；不支援掃描 PDF OCR、圖片理解、XLSX、PPTX 或舊版 DOC
+
 ### 語音辨識與 AI 摘要
 - Whisper `large-v3-turbo` 高速繁體中文語音辨識（VAD + Batch 推理）
 - 保留每段語音的時間戳，供引用追溯使用
@@ -179,12 +189,14 @@ rag_project/
     ├── models.py                    # AI 模型載入（Embedding / Reranker / Whisper）
     ├── llm_service.py               # LLM provider 管理（Ollama / DeepSeek）
     ├── audio_service.py             # 音檔管理（上傳 / 轉錄 / 摘要 / 刪除）
+    ├── document_service.py          # 文件解析（PDF / DOCX / TXT / MD）與內容區塊
     ├── rag_service.py               # RAG 核心邏輯（檢索 / 排序 / 問答 / 切分）
     ├── schemas.py                   # Pydantic 請求模型
     ├── requirements.txt             # Python 套件清單
     ├── static/
-    │   └── index.html               # 前端單頁式介面（1700+ 行）
+    │   └── index.html               # 前端單頁式介面
     ├── audio_uploads/               # 上傳音檔儲存目錄（.gitignore）
+    ├── document_uploads/            # 上傳文件儲存目錄（.gitignore）
     ├── chroma_db/                   # ChromaDB 向量資料（.gitignore）
     ├── notebooks.db                 # SQLite 資料庫（.gitignore）
     └── venv/                        # Python 虛擬環境（.gitignore）
@@ -307,7 +319,10 @@ uvicorn main:app --reload
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| `POST` | `/upload-audio/` | 上傳音檔（自動轉錄 + 摘要 / 分析 + 向量化，可帶 `llm_provider`） |
+| `POST` | `/upload-audio/` | 上傳音檔（自動轉錄與索引；摘要 / 分析由使用者手動觸發） |
+| `POST` | `/upload-source/` | 通用來源上傳；支援音檔、PDF、DOCX、TXT、MD |
+| `GET` | `/api/notebooks/{id}/sources/{sid}/file` | 開啟或下載來源原始檔 |
+| `GET` | `/api/notebooks/{id}/sources/{sid}/content` | 取得文件唯讀固定位置內容區塊 |
 | `GET` | `/api/notebooks/{id}/sources/{sid}/transcript` | 取得來源逐字稿 |
 | `PUT` | `/api/notebooks/{id}/sources/{sid}/transcript` | 修正逐字稿、重新分析並重新索引 |
 | `GET` | `/api/notebooks/{id}/sources/{sid}/audio` | 下載來源音檔 |
@@ -401,6 +416,9 @@ erDiagram
         TEXT analysis_status "pending / completed / failed"
         TEXT analysis_json "摘要分析 JSON"
         TEXT analysis_updated_at "分析更新時間"
+        TEXT source_type "audio / document"
+        TEXT mime_type "原始 MIME 類型"
+        TEXT content_segments_json "文件固定位置區塊 JSON"
     }
 
     messages {

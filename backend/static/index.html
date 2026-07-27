@@ -7,8 +7,7 @@
     <title>VoiceRAG 知識庫系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+    <link rel="icon" type="image/svg+xml" sizes="any" href="/static/voicerag-icon.svg?v=2">
     <style>
         /* 深色滾動條 */
         ::-webkit-scrollbar {
@@ -150,14 +149,12 @@
             <div class="flex items-center justify-between gap-4 mb-8">
                 <h1 class="text-xl font-semibold text-gray-200">最近開啟的筆記本</h1>
                 <button type="button" onclick="openSettingsModal()"
-                    class="inline-flex items-center justify-center w-10 h-10 rounded-full border border-[#444] text-gray-300 hover:text-white hover:bg-[#222428] transition"
-                    title="設定">
+                    class="group inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-400 hover:bg-[#25272c] hover:text-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-400 transition"
+                    title="開啟設定" aria-label="開啟設定">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8"
-                        stroke="currentColor" class="w-5 h-5">
+                        stroke="currentColor" class="h-6 w-6 transition-transform duration-200 group-hover:scale-105">
                         <path stroke-linecap="round" stroke-linejoin="round"
-                            d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.094c.55 0 1.02.398 1.11.94l.149.894c.07.424.35.78.75.94.22.088.433.187.64.297.374.198.828.17 1.18-.065l.744-.496a1.125 1.125 0 0 1 1.45.12l.773.774c.39.389.44 1.001.12 1.45l-.496.744c-.235.352-.263.806-.065 1.18.11.207.21.42.297.64.16.4.516.68.94.75l.894.149c.542.09.94.56.94 1.11v1.094c0 .55-.398 1.02-.94 1.11l-.894.149c-.424.07-.78.35-.94.75a6.4 6.4 0 0 1-.297.64c-.198.374-.17.828.065 1.18l.496.744c.32.449.27 1.061-.12 1.45l-.774.773a1.125 1.125 0 0 1-1.45.12l-.744-.496a1.125 1.125 0 0 0-1.18-.065 6.4 6.4 0 0 1-.64.297c-.4.16-.68.516-.75.94l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.02-.398-1.11-.94l-.149-.894a1.125 1.125 0 0 0-.75-.94 6.4 6.4 0 0 1-.64-.297 1.125 1.125 0 0 0-1.18.065l-.744.496a1.125 1.125 0 0 1-1.45-.12l-.773-.774a1.125 1.125 0 0 1-.12-1.45l.496-.744c.235-.352.263-.806.065-1.18a6.4 6.4 0 0 1-.297-.64 1.125 1.125 0 0 0-.94-.75l-.894-.149a1.125 1.125 0 0 1-.94-1.11v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.78-.35.94-.75.088-.22.187-.433.297-.64.198-.374.17-.828-.065-1.18l-.496-.744a1.125 1.125 0 0 1 .12-1.45l.774-.773a1.125 1.125 0 0 1 1.45-.12l.744.496c.352.235.806.263 1.18.065.207-.11.42-.21.64-.297.4-.16.68-.516.75-.94l.149-.894Z" />
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                            d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                            d="M4 6h9m4 0h3M13 4v4M4 12h3m4 0h9M7 10v4M4 18h10m4 0h2M14 16v4" />
                     </svg>
                 </button>
             </div>
@@ -191,9 +188,11 @@
                                 d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
                         </svg>
                     </button>
-                    <h1 class="text-base font-semibold text-gray-200 truncate max-w-[150px]"
-                        id="current-notebook-title">
-                        來源</h1>
+                    <h1 class="min-w-0 max-w-[180px]">
+                        <button id="current-notebook-title" type="button" onclick="renameCurrentNotebook()"
+                            class="block max-w-full truncate rounded-md px-2 py-1 text-left text-base font-semibold text-gray-200 hover:bg-[#333] hover:text-white focus:outline-none focus:ring-1 focus:ring-blue-400 transition"
+                            title="點擊直接編輯筆記本名稱">來源</button>
+                    </h1>
                 </div>
             </div>
 
@@ -227,15 +226,38 @@
                 </div>
 
                 <!-- 新增來源按鈕 -->
-                <label for="audioFile"
-                    class="flex items-center justify-center w-full py-2 border border-[#555] rounded-lg text-base text-gray-300 hover:bg-[#333] hover:text-white cursor-pointer transition">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
-                        stroke="currentColor" class="w-5 h-5 mr-2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                    </svg>
-                    新增來源
-                </label>
-                <input type="file" id="audioFile" accept="audio/*" class="hidden" onchange="uploadAudio()">
+                <div>
+                    <label for="audioFile"
+                        class="flex items-center justify-center w-full py-2 border border-[#555] rounded-lg text-base text-gray-300 hover:bg-[#333] hover:text-white cursor-pointer transition">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                            stroke="currentColor" class="w-5 h-5 mr-2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        </svg>
+                        新增來源
+                    </label>
+                    <input type="file" id="audioFile"
+                        accept="audio/*,.pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown"
+                        aria-describedby="sourceUploadHint sourceUploadDetails"
+                        class="hidden" onchange="uploadAudio()">
+                    <div class="mt-0.5 px-1 text-xs text-gray-400">
+                        <details class="group">
+                            <summary id="sourceUploadHint"
+                                class="flex cursor-pointer list-none items-center justify-between gap-2 text-gray-400 hover:text-gray-200 transition">
+                                <span>支援常見音訊、PDF、DOCX、TXT、MD</span>
+                                <span class="shrink-0 text-sm text-gray-500 group-open:text-blue-300"
+                                    aria-hidden="true">ⓘ</span>
+                            </summary>
+                            <div id="sourceUploadDetails"
+                                class="mt-2 space-y-1.5 leading-relaxed text-gray-500">
+                                <p><span class="text-gray-300">音訊：</span>MP3、M4A、WAV、WebM、OGG、MP4</p>
+                                <p><span class="text-gray-300">文件：</span>PDF、DOCX、TXT、MD</p>
+                                <p>文件單檔上限 50 MB。</p>
+                                <p>PDF 必須包含可選取的文字，目前不支援掃描 PDF 與 OCR。</p>
+                            </div>
+                        </details>
+                        <p class="mt-1.5 text-gray-500">一次上傳 1 個檔案</p>
+                    </div>
+                </div>
 
                 <!-- 來源清單 -->
                 <div class="space-y-2">
@@ -266,10 +288,10 @@
                         class="inline-flex rounded-xl border border-[#444] bg-[#25272c] p-1 shadow-inner">
                         <button id="llmProviderOllamaBtn" type="button" onclick="setLlmProvider('ollama')"
                             class="px-3 py-1.5 rounded-lg text-xs font-medium transition"
-                            title="使用本機 Ollama 模型回答與分析">本地 AI</button>
+                            title="目前使用的 AI：本地 AI">本地 AI</button>
                         <button id="llmProviderDeepseekBtn" type="button" onclick="setLlmProvider('deepseek')"
                             class="px-3 py-1.5 rounded-lg text-xs font-medium transition"
-                            title="使用 DeepSeek API 回答與分析">DeepSeek</button>
+                            title="切換至線上 AI">線上 AI</button>
                     </div>
                     <button id="diagramWorkspaceToggle" type="button" onclick="toggleDiagramWorkspace()"
                         class="inline-flex items-center gap-2 rounded-lg border border-[#444] bg-[#25272c] px-3 py-2 text-xs font-medium text-gray-300 hover:bg-[#333] hover:text-white transition"
@@ -290,7 +312,7 @@
                 <div id="initialWelcomeMessage" class="flex max-w-4xl mx-auto w-full transition-opacity duration-300">
                     <div class="text-gray-300 pt-1 whitespace-pre-wrap leading-relaxed max-w-3xl text-base">你好！我是你的專屬
                         VoiceRAG 知識助理。
-                        請先從左側「新增來源」上傳語音檔案建立知識庫。上傳後，你可以直接提問，也可以從來源旁的星星選單產生摘要。</div>
+                        請先從左側「新增來源」上傳音檔或文件建立知識庫。上傳後，你可以直接提問，也可以從來源旁的星星選單產生摘要。</div>
                 </div>
             </div>
 
@@ -356,24 +378,38 @@
             <div id="diagramActionPanel" class="shrink-0 border-b border-[#333] bg-[#1b1c1f] p-4">
                 <div class="grid grid-cols-2 gap-2">
                     <button type="button" onclick="askQuestion(null, 'flowchart')"
-                        class="inline-flex min-h-14 items-center justify-center gap-2 rounded-lg border border-[#444] bg-[#25272c] px-3 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition"
+                        class="group inline-flex min-h-16 items-center justify-start gap-3 rounded-xl border border-[#40434a] bg-[#25272c] px-3 py-2.5 text-gray-300 hover:border-[#5a5d65] hover:bg-[#303238] hover:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 transition"
                         title="根據目前問題或筆記本知識生成流程圖">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                            stroke-width="1.8" stroke="currentColor" class="w-4 h-4 shrink-0">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                d="M6 5.25h12M6 12h12M6 18.75h12M4.5 5.25h.01M4.5 12h.01M4.5 18.75h.01" />
-                        </svg>
-                        <span>流程圖</span>
+                        <span class="grid h-9 w-9 shrink-0 place-items-center text-gray-300 group-hover:text-white">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                stroke-width="1.8" stroke="currentColor" class="h-5 w-5">
+                                <rect x="8" y="3" width="8" height="5" rx="1.5" />
+                                <rect x="3" y="16" width="7" height="5" rx="1.5" />
+                                <rect x="14" y="16" width="7" height="5" rx="1.5" />
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M12 8v4m0 0H6.5v4M12 12h5.5v4" />
+                            </svg>
+                        </span>
+                        <span class="min-w-0 text-left">
+                            <span class="block text-sm font-semibold">流程圖</span>
+                            <span class="mt-0.5 block text-xs text-gray-500 group-hover:text-gray-300">步驟與分支</span>
+                        </span>
                     </button>
                     <button type="button" onclick="askQuestion(null, 'fishbone')"
-                        class="inline-flex min-h-14 items-center justify-center gap-2 rounded-lg border border-[#444] bg-[#25272c] px-3 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white transition"
+                        class="group inline-flex min-h-16 items-center justify-start gap-3 rounded-xl border border-[#40434a] bg-[#25272c] px-3 py-2.5 text-gray-300 hover:border-[#5a5d65] hover:bg-[#303238] hover:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 transition"
                         title="根據目前問題或筆記本知識生成魚骨圖">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                            stroke-width="1.8" stroke="currentColor" class="w-4 h-4 shrink-0">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                d="M4 12h15m-9-5 5 5-5 5M8 7l-4 5 4 5" />
-                        </svg>
-                        <span>魚骨圖</span>
+                        <span class="grid h-9 w-9 shrink-0 place-items-center text-gray-300 group-hover:text-white">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                stroke-width="1.8" stroke="currentColor" class="h-5 w-5">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M3 12h15.5M6 12l4-5m0 5 4-5M6 12l4 5m0-5 4 5" />
+                                <rect x="18.5" y="9" width="3.5" height="6" rx="1" />
+                            </svg>
+                        </span>
+                        <span class="min-w-0 text-left">
+                            <span class="block text-sm font-semibold">魚骨圖</span>
+                            <span class="mt-0.5 block text-xs text-gray-500 group-hover:text-gray-300">原因與結果</span>
+                        </span>
                     </button>
                 </div>
             </div>
@@ -471,8 +507,8 @@
     </div>
 
     <!-- 逐字稿查看與修正 Dialog -->
-    <div id="transcriptModal" class="fixed inset-0 z-50 flex items-center justify-center hidden bg-black bg-opacity-50 px-4">
-        <div class="bg-[#1e1f22] border border-[#333] rounded-xl w-full max-w-4xl max-h-[88vh] shadow-2xl flex flex-col">
+    <div id="transcriptModal" class="fixed inset-0 z-50 flex items-center justify-center hidden bg-black bg-opacity-50 p-2 sm:p-4">
+        <div class="flex h-[94vh] w-[98vw] max-w-[1500px] flex-col rounded-xl border border-[#333] bg-[#1e1f22] shadow-2xl sm:h-[92vh] sm:w-[96vw]">
             <div class="p-5 border-b border-[#333] flex items-start justify-between gap-4">
                 <div class="min-w-0">
                     <h3 class="text-lg font-semibold text-gray-200">逐字稿查看與修正</h3>
@@ -508,6 +544,31 @@
                     <button id="saveTranscriptBtn" onclick="saveTranscriptAndReindex()"
                         class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-[#333] disabled:text-gray-500 disabled:cursor-not-allowed text-white rounded-lg transition">儲存並重新索引</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文件引用內容唯讀 Dialog -->
+    <div id="documentContentModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60 px-4">
+        <div class="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-xl border border-[#333] bg-[#1e1f22] shadow-2xl">
+            <div class="flex items-start justify-between gap-4 border-b border-[#333] p-5">
+                <div class="min-w-0">
+                    <h3 class="text-lg font-semibold text-gray-200">文件引用內容</h3>
+                    <p id="documentContentFilename" class="mt-1 truncate text-sm text-gray-500"></p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <a id="documentDownloadLink" target="_blank"
+                        rel="noopener noreferrer"
+                        class="rounded-lg border border-[#444] px-3 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white">開啟原檔</a>
+                    <button onclick="closeDocumentContentModal()" class="text-gray-400 hover:text-white" title="關閉">✕</button>
+                </div>
+            </div>
+            <div class="min-h-0 flex-1 overflow-y-auto p-5">
+                <p id="documentContentStatus" class="mb-4 text-sm text-gray-400"></p>
+                <div id="documentContentSegments" class="space-y-4"></div>
+            </div>
+            <div class="flex justify-end gap-3 border-t border-[#333] p-5">
+                <button onclick="closeDocumentContentModal()" class="px-4 py-2 text-sm text-gray-300 hover:text-white">關閉</button>
             </div>
         </div>
     </div>
@@ -576,7 +637,7 @@
         let currentLlmProvider = localStorage.getItem(LLM_PROVIDER_STORAGE_KEY) || 'ollama';
         let llmProviders = {
             ollama: { id: 'ollama', label: '本地 AI', available: true, message: '' },
-            deepseek: { id: 'deepseek', label: 'DeepSeek', available: false, message: 'DeepSeek API Key 尚未設定' }
+            deepseek: { id: 'deepseek', label: '線上 AI', available: false, message: '線上 AI 尚未設定（缺少 DEEPSEEK_API_KEY）' }
         };
         let notebookDiagrams = [];
         let activeDiagramId = null;
@@ -739,7 +800,12 @@
                     isActive ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white hover:bg-[#333]',
                     !meta.available ? 'opacity-40 cursor-not-allowed hover:bg-transparent hover:text-gray-400' : ''
                 ].join(' ');
-                element.title = meta.available ? `${meta.label}：${meta.model || ''}` : meta.message;
+                const modelLabel = meta.model ? `（${meta.model}）` : '';
+                element.title = meta.available
+                    ? isActive
+                        ? `目前使用的 AI：${meta.label}${modelLabel}`
+                        : `切換至 ${meta.label}${modelLabel}`
+                    : meta.message;
             });
         }
 
@@ -807,15 +873,15 @@
         }
 
         function getAudioDeleteText(deleted, missing) {
-            if (deleted) return '音檔：已刪除';
-            if (missing) return '音檔：原本不存在或已被移除';
-            return '音檔：未刪除，可能不是一般檔案或目前被系統保護';
+            if (deleted) return '原始檔：已刪除';
+            if (missing) return '原始檔：原本不存在或已被移除';
+            return '原始檔：未刪除，可能不是一般檔案或目前被系統保護';
         }
 
         function getSourceDeleteDetails(data) {
             return [
                 `知識庫索引：已刪除 ${data.deleted_chunks || 0} 個片段`,
-                getAudioDeleteText(data.audio_deleted, data.audio_missing)
+                getAudioDeleteText(data.file_deleted ?? data.audio_deleted, data.file_missing ?? data.audio_missing)
             ];
         }
 
@@ -926,8 +992,20 @@
                 button.type = 'button';
                 button.className = 'block text-left text-gray-300 underline underline-offset-4 decoration-gray-500 hover:text-white hover:decoration-blue-300 transition';
                 button.dataset.referenceSourceId = reference.source_id;
-                button.textContent = `${index + 1}. ${reference.source || reference.label || '未知來源'}`;
-                button.onclick = () => openTranscriptModal(reference.source_id);
+                const location = reference.location_label || reference.time_range || '';
+                button.textContent = `${index + 1}. ${reference.source || reference.label || '未知來源'}${location ? ` · ${location}` : ''}`;
+                button.onclick = () => {
+                    if (reference.source_type === 'document') {
+                        openDocumentContentModal(
+                            reference.source_id,
+                            reference.segment_id,
+                            reference.excerpt || '',
+                            reference.page_number
+                        );
+                    } else {
+                        openTranscriptModal(reference.source_id);
+                    }
+                };
                 list.appendChild(button);
             });
 
@@ -1246,10 +1324,10 @@
             item.onclick = () => toggleDiagramPreview(diagram.id);
 
             const icon = document.createElement('span');
-            icon.className = 'grid h-9 w-9 shrink-0 place-items-center text-blue-300';
+            icon.className = 'grid h-9 w-9 shrink-0 place-items-center text-gray-300';
             icon.innerHTML = diagram.diagram_type === 'fishbone'
-                ? '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 12h15m-9-5 5 5-5 5M8 7l-4 5 4 5" /></svg>'
-                : '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 5.25h12M6 12h12M6 18.75h12M4.5 5.25h.01M4.5 12h.01M4.5 18.75h.01" /></svg>';
+                ? '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12h15.5M6 12l4-5m0 5 4-5M6 12l4 5m0-5 4 5" /><rect x="18.5" y="9" width="3.5" height="6" rx="1" /></svg>'
+                : '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="h-5 w-5"><rect x="8" y="3" width="8" height="5" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /><rect x="14" y="16" width="7" height="5" rx="1.5" /><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4m0 0H6.5v4M12 12h5.5v4" /></svg>';
 
             const textWrap = document.createElement('span');
             textWrap.className = 'min-w-0 flex-1';
@@ -1821,6 +1899,8 @@
         }
 
         function createSourceElement(source) {
+            const isDocument = source.source_type === 'document';
+            const hasContent = source.has_content ?? source.has_transcript;
             const item = document.createElement('div');
             item.id = `source-item-${source.id}`;
             item.className = 'source-item w-full text-base text-gray-300 p-1 rounded hover:bg-[#333] transition space-y-1';
@@ -1831,17 +1911,25 @@
             const playButton = document.createElement('button');
             playButton.type = 'button';
             playButton.className = 'w-8 h-8 rounded-md flex items-center justify-center text-blue-400 hover:bg-[#3a3a3a] hover:text-blue-200 shrink-0 transition';
-            playButton.title = '播放音檔';
-            playButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" class="w-4 h-4"><path d="M8 5.14v13.72c0 .8.89 1.27 1.55.82l10.04-6.86a1 1 0 0 0 0-1.64L9.55 4.32A1 1 0 0 0 8 5.14Z"/></svg>';
+            playButton.title = isDocument ? '開啟原始文件' : '播放音檔';
+            playButton.innerHTML = isDocument
+                ? '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5A3.375 3.375 0 0 0 10.125 2.25H6.75A2.25 2.25 0 0 0 4.5 4.5v15A2.25 2.25 0 0 0 6.75 21h10.5a2.25 2.25 0 0 0 2.25-2.25v-4.5Z"/></svg>'
+                : '<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" class="w-4 h-4"><path d="M8 5.14v13.72c0 .8.89 1.27 1.55.82l10.04-6.86a1 1 0 0 0 0-1.64L9.55 4.32A1 1 0 0 0 8 5.14Z"/></svg>';
             playButton.onclick = (event) => {
                 event.stopPropagation();
-                toggleSourceAudio(source, playButton);
+                if (isDocument) {
+                    openOriginalSourceFile(source.id);
+                } else {
+                    toggleSourceAudio(source, playButton);
+                }
             };
 
             const openButton = document.createElement('button');
             openButton.type = 'button';
             openButton.className = 'flex-1 flex items-center justify-between text-left overflow-hidden min-w-0 px-1 py-1 rounded hover:text-white transition';
-            openButton.onclick = () => openTranscriptModal(source.id);
+            openButton.onclick = () => isDocument
+                ? openOriginalSourceFile(source.id)
+                : openTranscriptModal(source.id);
 
             const nameWrap = document.createElement('div');
             nameWrap.className = 'flex items-center space-x-2 overflow-hidden min-w-0';
@@ -1855,10 +1943,10 @@
             nameWrap.appendChild(name);
             openButton.appendChild(nameWrap);
 
-            if (!source.has_transcript) {
+            if (!hasContent) {
                 const badge = document.createElement('span');
                 badge.className = 'ml-2 text-xs text-amber-300 border border-amber-500/40 rounded px-2 py-0.5 shrink-0';
-                badge.textContent = '無逐字稿';
+                badge.textContent = isDocument ? '無內容' : '無逐字稿';
                 openButton.appendChild(badge);
             }
 
@@ -1869,7 +1957,7 @@
             analysisButton.type = 'button';
             analysisButton.className = 'w-8 h-8 rounded-md flex items-center justify-center text-gray-500 hover:bg-blue-500/10 hover:text-blue-300 shrink-0 transition disabled:opacity-40 disabled:cursor-not-allowed';
             analysisButton.title = '摘要與分析';
-            analysisButton.disabled = !source.has_transcript;
+            analysisButton.disabled = !hasContent;
             analysisButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></svg>';
 
             const analysisDropdownId = `source-analysis-${source.id}`;
@@ -1882,7 +1970,7 @@
             const summarizeButton = document.createElement('button');
             summarizeButton.type = 'button';
             summarizeButton.className = 'w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-[#333] hover:text-white disabled:text-gray-500 disabled:hover:bg-transparent';
-            summarizeButton.disabled = !source.has_transcript;
+            summarizeButton.disabled = !hasContent;
             summarizeButton.textContent = '摘要檔案';
             summarizeButton.onclick = (event) => {
                 event.stopPropagation();
@@ -1959,7 +2047,9 @@
                 item.appendChild(statusRow);
             }
 
-            item.appendChild(progressPanel);
+            if (!isDocument) {
+                item.appendChild(progressPanel);
+            }
             return item;
         }
 
@@ -2351,6 +2441,93 @@
         }
 
         // 修改名稱 Modal 邏輯
+        function renameCurrentNotebook() {
+            if (!currentNotebookId) return;
+            const title = document.getElementById('current-notebook-title');
+            if (!title || title.dataset.renaming === 'true') return;
+
+            const notebookId = currentNotebookId;
+            const originalName = title.textContent.trim() || '未命名筆記本';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = originalName;
+            input.maxLength = 120;
+            input.setAttribute('aria-label', '筆記本名稱');
+            input.className = 'w-[180px] max-w-full rounded-md border border-blue-400 bg-[#131314] px-2 py-1 text-base font-semibold text-gray-100 outline-none';
+
+            let finished = false;
+            const restoreTitle = (name = originalName) => {
+                title.textContent = name;
+                title.dataset.renaming = 'false';
+                title.classList.remove('hidden');
+                input.remove();
+            };
+
+            const finishEditing = async (shouldSave) => {
+                if (finished) return;
+                finished = true;
+
+                const newName = input.value.trim();
+                if (!shouldSave) {
+                    restoreTitle();
+                    return;
+                }
+                if (!newName) {
+                    restoreTitle();
+                    showToast({
+                        tone: 'error',
+                        title: '筆記本名稱不可為空'
+                    });
+                    return;
+                }
+                if (newName === originalName) {
+                    restoreTitle();
+                    return;
+                }
+
+                input.disabled = true;
+                input.classList.add('opacity-60');
+                try {
+                    const res = await fetch(`/api/notebooks/${notebookId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: newName })
+                    });
+                    if (!res.ok) {
+                        throw new Error('修改名稱失敗');
+                    }
+                    restoreTitle(newName);
+                    fetchNotebooks();
+                } catch (error) {
+                    restoreTitle();
+                    showToast({
+                        tone: 'error',
+                        title: '重新命名失敗',
+                        message: error.message || '請稍後再試。'
+                    });
+                }
+            };
+
+            input.addEventListener('keydown', event => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void finishEditing(true);
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    void finishEditing(false);
+                }
+            });
+            input.addEventListener('blur', () => {
+                void finishEditing(true);
+            });
+
+            title.dataset.renaming = 'true';
+            title.classList.add('hidden');
+            title.parentElement.appendChild(input);
+            input.focus();
+            input.select();
+        }
+
         function openRenameModal(id, currentName, mode = 'notebook') {
             renameTargetId = id;
             renameMode = mode;
@@ -2465,6 +2642,9 @@
                     });
                     if (!res.ok) {
                         throw new Error('修改名稱失敗');
+                    }
+                    if (renameTargetId === currentNotebookId) {
+                        document.getElementById('current-notebook-title').textContent = newName;
                     }
                     fetchNotebooks();
                 }
@@ -2626,6 +2806,112 @@
                     setTranscriptAiButtonsDisabled(false);
                 }
             }
+        }
+
+        function getOriginalSourceFileUrl(sourceId, pageNumber = null) {
+            const baseUrl = `/api/notebooks/${currentNotebookId}/sources/${sourceId}/file`;
+            const parsedPage = Number(pageNumber);
+            return Number.isInteger(parsedPage) && parsedPage > 0
+                ? `${baseUrl}#page=${parsedPage}`
+                : baseUrl;
+        }
+
+        function openOriginalSourceFile(sourceId, pageNumber = null) {
+            if (!currentNotebookId || !sourceId) return;
+            const link = document.createElement('a');
+            link.href = getOriginalSourceFileUrl(sourceId, pageNumber);
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }
+
+        function appendDocumentEvidenceText(container, text, excerpt = '') {
+            const content = String(text || '');
+            const evidence = String(excerpt || '').trim();
+            const index = evidence ? content.indexOf(evidence) : -1;
+            if (index < 0) {
+                container.textContent = content;
+                return;
+            }
+
+            container.appendChild(document.createTextNode(content.slice(0, index)));
+            const mark = document.createElement('mark');
+            mark.className = 'rounded bg-amber-300/30 px-0.5 text-amber-100';
+            mark.textContent = content.slice(index, index + evidence.length);
+            container.appendChild(mark);
+            container.appendChild(document.createTextNode(content.slice(index + evidence.length)));
+        }
+
+        async function openDocumentContentModal(sourceId, targetSegmentId = '', excerpt = '', pageNumber = null) {
+            if (!currentNotebookId || !sourceId) return;
+            const modal = document.getElementById('documentContentModal');
+            const filenameEl = document.getElementById('documentContentFilename');
+            const statusEl = document.getElementById('documentContentStatus');
+            const container = document.getElementById('documentContentSegments');
+            const downloadLink = document.getElementById('documentDownloadLink');
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            filenameEl.textContent = '載入中...';
+            statusEl.textContent = '正在讀取引用內容...';
+            container.innerHTML = '';
+            downloadLink.href = getOriginalSourceFileUrl(sourceId, pageNumber);
+
+            try {
+                const res = await fetch(`/api/notebooks/${currentNotebookId}/sources/${sourceId}/content`);
+                const data = await readSuccessfulApiResponse(res, '讀取文件內容失敗');
+                const source = data.source || {};
+                if (source.source_type !== 'document') {
+                    throw new Error('這個來源不是文件。');
+                }
+                filenameEl.textContent = source.filename || '文件';
+                const segments = Array.isArray(source.segments) ? source.segments : [];
+                statusEl.textContent = '以下是系統從原檔抽取的唯讀內容；如需修改，請更新原始文件後重新上傳。';
+
+                segments.forEach(segment => {
+                    const card = document.createElement('section');
+                    card.id = `document-segment-${segment.segment_id}`;
+                    card.dataset.segmentId = segment.segment_id;
+                    card.tabIndex = -1;
+                    card.className = 'rounded-xl border border-[#3a3d44] bg-[#222428] p-4 outline-none transition';
+
+                    const label = document.createElement('div');
+                    label.className = 'mb-3 text-sm font-semibold text-blue-200';
+                    label.textContent = segment.location_label || '文件內容';
+
+                    const content = document.createElement('div');
+                    content.className = 'whitespace-pre-wrap break-words rounded-lg border border-[#3a3d44] bg-[#131314] px-4 py-3 text-sm leading-relaxed text-gray-200';
+                    appendDocumentEvidenceText(
+                        content,
+                        segment.text || '',
+                        String(segment.segment_id) === String(targetSegmentId) ? excerpt : ''
+                    );
+
+                    card.appendChild(label);
+                    card.appendChild(content);
+                    container.appendChild(card);
+                });
+
+                if (targetSegmentId) {
+                    window.requestAnimationFrame(() => {
+                        const card = document.getElementById(`document-segment-${targetSegmentId}`);
+                        if (!card) return;
+                        card.classList.add('border-amber-400', 'ring-2', 'ring-amber-400/30');
+                        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        card.focus({ preventScroll: true });
+                    });
+                }
+            } catch (error) {
+                statusEl.textContent = error.message || '讀取文件內容失敗';
+            }
+        }
+
+        function closeDocumentContentModal() {
+            const modal = document.getElementById('documentContentModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
         }
 
         async function openTranscriptModal(sourceId) {
@@ -2861,6 +3147,13 @@
             { title: '向量化中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 76 },
             { title: '完成', detail: '音檔已處理完成。', percent: 100 }
         ];
+        const documentUploadProgressStages = [
+            { title: '上傳中', detail: '正在送出文件到後端。', percent: 10 },
+            { title: '抽取文字中', detail: '正在讀取段落、頁面與表格文字。', percent: 35 },
+            { title: '文字切分中', detail: '正在依固定位置區塊整理知識片段。', percent: 58 },
+            { title: '建立索引中', detail: 'Embedding 與 ChromaDB 正在建立索引。', percent: 82 },
+            { title: '完成', detail: '文件已處理完成。', percent: 100 }
+        ];
 
         function createUploadTempSourceElement(id, fileName) {
             const item = document.createElement('div');
@@ -2978,7 +3271,8 @@
         }
 
         function updateUploadProgress(progress, stageIndex, state = 'active', errorMessage = '') {
-            const stage = uploadProgressStages[stageIndex] || uploadProgressStages[0];
+            const stages = progress.stages || uploadProgressStages;
+            const stage = stages[stageIndex] || stages[0];
             const percentValue = state === 'error' ? 100 : stage.percent;
             const titleText = state === 'error' ? '處理失敗' : stage.title;
             const detailText = state === 'error' ? errorMessage : stage.detail;
@@ -3010,16 +3304,18 @@
 
         function startUploadProgress(progress) {
             let stageIndex = 0;
+            const stages = progress.stages || uploadProgressStages;
             updateUploadProgress(progress, stageIndex);
             progress.timer = window.setInterval(() => {
-                stageIndex = Math.min(stageIndex + 1, uploadProgressStages.length - 2);
+                stageIndex = Math.min(stageIndex + 1, stages.length - 2);
                 updateUploadProgress(progress, stageIndex);
             }, 6000);
         }
 
         function finishUploadProgress(progress) {
             window.clearInterval(progress.timer);
-            updateUploadProgress(progress, uploadProgressStages.length - 1, 'complete');
+            const stages = progress.stages || uploadProgressStages;
+            updateUploadProgress(progress, stages.length - 1, 'complete');
 
             window.setTimeout(() => {
                 const progressEl = document.getElementById(progress.messageId);
@@ -3129,6 +3425,15 @@
             if (!currentNotebookId) return;
             const autoFilename = Boolean(options.autoFilename);
             const displayName = options.displayName || file.name;
+            const isDocument = /\.(pdf|docx|txt|md)$/i.test(file.name || '');
+            if (isDocument && file.size > 50 * 1024 * 1024) {
+                showToast({
+                    tone: 'error',
+                    title: '文件過大',
+                    message: '單一文件大小不可超過 50 MB。'
+                });
+                return { status: 'error', message: '文件大小超過 50 MB 上限。' };
+            }
             const sourcesList = document.getElementById('sourcesList');
 
             // 產生暫時的 ID
@@ -3141,7 +3446,12 @@
 
             // 在對話框顯示載入訊息
             createUploadProgressMessage(loadingMsgId, displayName);
-            const uploadProgress = { sourceId: tempSourceId, messageId: loadingMsgId, timer: null };
+            const uploadProgress = {
+                sourceId: tempSourceId,
+                messageId: loadingMsgId,
+                timer: null,
+                stages: isDocument ? documentUploadProgressStages : uploadProgressStages
+            };
             startUploadProgress(uploadProgress);
 
             const formData = new FormData();
@@ -3154,7 +3464,7 @@
             }
 
             try {
-                const response = await fetch('/upload-audio/', { method: 'POST', body: formData });
+                const response = await fetch('/upload-source/', { method: 'POST', body: formData });
                 const data = await response.json();
 
                 if (data.status === 'success') {

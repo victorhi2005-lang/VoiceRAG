@@ -9,6 +9,7 @@ backend/venv/
 
 # Audio uploads
 backend/audio_uploads/
+backend/document_uploads/
 
 # ChromaDB
 backend/chroma_db/

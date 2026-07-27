@@ -95,10 +95,10 @@ def get_llm_provider_config() -> dict[str, Any]:
             },
             {
                 "id": LLM_PROVIDER_DEEPSEEK,
-                "label": "DeepSeek",
+                "label": "線上 AI",
                 "available": deepseek_ready,
                 "model": deepseek_model,
-                "message": "" if deepseek_ready else "DeepSeek API Key 尚未設定",
+                "message": "" if deepseek_ready else "線上 AI 尚未設定（缺少 DEEPSEEK_API_KEY）",
             },
         ],
     }

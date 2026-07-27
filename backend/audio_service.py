@@ -16,6 +16,7 @@ from db import (
     get_source_delete_info,
     get_source_filename_suggestion_input,
     get_source_filenames,
+    get_source_file_info,
     insert_ai_summary_message,
     insert_source_record,
     save_suggested_questions,
@@ -39,6 +40,11 @@ from rag_service import (
     index_source_transcript,
     should_use_deep_analysis,
     update_source_filename_metadata,
+)
+from document_service import (
+    DOCUMENT_UPLOAD_DIR,
+    delete_document_file,
+    rename_document_file,
 )
 
 
@@ -253,6 +259,7 @@ def generate_ai_audio_filename(
     analysis=None,
     llm_provider=None,
     respect_original_context=True,
+    source_type="audio",
 ):
     original_stem = get_filename_stem(fallback_filename)
     is_generic_original = is_generic_filename_stem(original_stem)
@@ -262,9 +269,11 @@ def generate_ai_audio_filename(
         return fallback_filename
 
     naming_context = build_filename_context_sample(transcript_text, analysis)
+    source_label = "文件內容" if source_type == "document" else "錄音逐字稿"
+    filename_kind = "文件" if source_type == "document" else "音檔"
     if is_generic_original:
         prompt = f"""
-請根據以下錄音逐字稿片段，產生一個精準、自然、適合當音檔名稱的繁體中文短檔名。
+請根據以下{source_label}，產生一個精準、自然、適合當{filename_kind}名稱的繁體中文短檔名。
 
 規則：
 1. 只輸出檔名本身，不要副檔名。
@@ -273,12 +282,12 @@ def generate_ai_audio_filename(
 4. 請抓整體主題，不要只用單一細節、例子或開頭片段命名。
 5. 如果內容太短、太雜或無法判斷主題，請只輸出：無法判斷。
 
-逐字稿片段：
+來源內容：
 {naming_context}
 """
     else:
         prompt = f"""
-請根據原始檔名與逐字稿片段，精修出一個更自然、清楚、適合當音檔名稱的繁體中文短檔名。
+請根據原始檔名與{source_label}，精修出一個更自然、清楚、適合當{filename_kind}名稱的繁體中文短檔名。
 
 原始檔名主題：{original_stem}
 
@@ -287,10 +296,10 @@ def generate_ai_audio_filename(
 2. 長度 6 到 18 個中文字左右。
 3. 不要使用 / \\ : * ? " < > | 等檔名禁用符號。
 4. 原始檔名已經提供主題方向，請只做修飾、簡化或補明確性，不可以大幅改變主題。
-5. 如果逐字稿與原始檔名方向不衝突，請優先保留原始檔名的核心詞。
+5. 如果來源內容與原始檔名方向不衝突，請優先保留原始檔名的核心詞。
 6. 如果無法精修，請輸出原始檔名主題本身。
 
-逐字稿片段：
+來源內容：
 {naming_context}
 """
     try:
@@ -334,7 +343,7 @@ def rename_audio_file(current_path, new_filename):
 
 
 def rename_source_filename(notebook_id, source_id, requested_filename):
-    source = get_source_audio_info(notebook_id, source_id)
+    source = get_source_file_info(notebook_id, source_id)
     if not source:
         return {"status": "error", "message": "找不到指定來源。"}
 
@@ -351,9 +360,12 @@ def rename_source_filename(notebook_id, source_id, requested_filename):
             "source": {"id": source_id, "filename": old_filename}
         }
 
-    old_path = os.path.join(UPLOAD_DIR, os.path.basename(old_filename))
-    if os.path.exists(old_path):
-        rename_audio_file(old_path, new_filename)
+    if source["source_type"] == "document":
+        new_filename = rename_document_file(notebook_id, old_filename, requested_filename)
+    else:
+        old_path = os.path.join(UPLOAD_DIR, os.path.basename(old_filename))
+        if os.path.exists(old_path):
+            rename_audio_file(old_path, new_filename)
 
     updated = update_source_filename_record(notebook_id, source_id, new_filename)
     if not updated:
@@ -381,10 +393,10 @@ def suggest_source_filename(notebook_id, source_id, llm_provider=None):
     if not row:
         return {"status": "error", "message": "找不到指定來源。"}
 
-    current_filename, transcript_text, analysis_json = row
+    current_filename, transcript_text, analysis_json, source_type = row
     transcript_text = (transcript_text or "").strip()
     if not transcript_text:
-        return {"status": "error", "message": "此來源沒有可用逐字稿，無法使用 AI 取檔名。"}
+        return {"status": "error", "message": "此來源沒有可用文字內容，無法使用 AI 取檔名。"}
 
     extension = os.path.splitext(current_filename or "")[1] or ".webm"
     analysis = None
@@ -416,6 +428,7 @@ def suggest_source_filename(notebook_id, source_id, llm_provider=None):
             analysis=analysis,
             llm_provider=llm_provider,
             respect_original_context=False,
+            source_type=source_type or "audio",
         )
 
     stop_local_llm_after_use(llm_provider)
@@ -435,14 +448,20 @@ def delete_source_data(notebook_id, source_id):
     if not deleted_record:
         return {"status": "error", "message": "找不到指定來源。"}
 
-    audio_result = delete_audio_file(source["filename"])
+    if source.get("source_type") == "document":
+        audio_result = delete_document_file(source["filename"])
+    else:
+        audio_result = delete_audio_file(source["filename"])
     return {
         "status": "success",
         "source": {
             "id": source_id,
-            "filename": source["filename"]
+            "filename": source["filename"],
+            "source_type": source.get("source_type", "audio")
         },
         "deleted_chunks": deleted_chunks,
+        "file_deleted": audio_result["deleted"],
+        "file_missing": audio_result["missing"],
         "audio_deleted": audio_result["deleted"],
         "audio_missing": audio_result["missing"]
     }
@@ -457,7 +476,10 @@ def delete_notebook_data(notebook_id):
 
     audio_results = []
     for source in notebook["sources"]:
-        audio_result = delete_audio_file(source["filename"])
+        if source.get("source_type") == "document":
+            audio_result = delete_document_file(source["filename"])
+        else:
+            audio_result = delete_audio_file(source["filename"])
         audio_results.append({
             "source_id": source["id"],
             "filename": source["filename"],
@@ -473,6 +495,7 @@ def delete_notebook_data(notebook_id):
             "name": notebook["name"]
         },
         "deleted_sources": len(notebook["sources"]),
+        "file_results": audio_results,
         "audio_results": audio_results
     }
 
@@ -481,27 +504,46 @@ def check_data_consistency():
     sqlite_snapshot = get_data_consistency_snapshot()
     chroma_snapshot = cast(dict[str, Any], get_chroma_consistency_snapshot())
     audio_files = set(list_audio_upload_files())
+    document_files = {
+        path.name
+        for path in DOCUMENT_UPLOAD_DIR.iterdir()
+        if path.is_file()
+    }
 
     notebooks = sqlite_snapshot["notebooks"]
     sources = sqlite_snapshot["sources"]
     notebook_ids = {notebook["id"] for notebook in notebooks}
     source_ids = {source["id"] for source in sources}
-    source_filenames = {os.path.basename(source["filename"] or "") for source in sources}
+    audio_source_filenames = {
+        os.path.basename(source["filename"] or "")
+        for source in sources
+        if source.get("source_type", "audio") == "audio"
+    }
+    document_source_filenames = {
+        os.path.basename(source["filename"] or "")
+        for source in sources
+        if source.get("source_type") == "document"
+    }
     chroma_collections = set(chroma_snapshot["collections"])
     source_chunks_by_notebook = cast(dict[str, dict[str, Any]], chroma_snapshot["source_chunks_by_notebook"])
     issues = []
 
     for source in sources:
         filename = os.path.basename(source["filename"] or "")
-        audio_path = get_audio_path_for_filename(filename)
-        if not audio_path or not os.path.exists(audio_path):
+        if source.get("source_type", "audio") == "document":
+            source_path = DOCUMENT_UPLOAD_DIR / filename
+            missing_file = not source_path.is_file()
+        else:
+            source_path = get_audio_path_for_filename(filename)
+            missing_file = not source_path or not os.path.exists(source_path)
+        if missing_file:
             issues.append({
-                "type": "sqlite_source_missing_audio",
+                "type": "sqlite_source_missing_file",
                 "severity": "warning",
                 "notebook_id": source["notebook_id"],
                 "source_id": source["id"],
                 "filename": source["filename"],
-                "message": "SQLite 有來源紀錄，但 audio_uploads 找不到對應音檔。"
+                "message": "SQLite 有來源紀錄，但找不到對應的原始來源檔案。"
             })
 
         chunk_info = source_chunks_by_notebook.get(source["notebook_id"], {})
@@ -561,12 +603,19 @@ def check_data_consistency():
                 "message": "ChromaDB 有 chunks 缺少 source_id metadata。"
             })
 
-    for filename in sorted(audio_files - source_filenames):
+    for filename in sorted(audio_files - audio_source_filenames):
         issues.append({
             "type": "orphan_audio_file",
             "severity": "info",
             "filename": filename,
             "message": "audio_uploads 有音檔，但 SQLite sources 沒有對應紀錄。"
+        })
+    for filename in sorted(document_files - document_source_filenames):
+        issues.append({
+            "type": "orphan_document_file",
+            "severity": "info",
+            "filename": filename,
+            "message": "document_uploads 有文件，但 SQLite sources 沒有對應紀錄。"
         })
 
     for error in chroma_snapshot["errors"]:
@@ -583,6 +632,7 @@ def check_data_consistency():
             "notebooks": len(notebooks),
             "sources": len(sources),
             "audio_files": len(audio_files),
+            "document_files": len(document_files),
             "chroma_collections": len(chroma_collections),
             "issues": len(issues)
         },
@@ -648,13 +698,13 @@ def transcribe_audio(file_path, llm_provider=None):
 
 def generate_summary(transcript_text, llm_provider=None):
     prompt = f"""
-        你是一個專業的 AI 知識分析助手。請閱讀以下的口述語音逐字稿，
+        你是一個專業的 AI 知識分析助手。請閱讀以下來源內容，
         進行深入的訊息分析，並給出一份精煉的「整體重點摘要」。
         請用流暢的段落來總結核心訊息，幫助讀者快速掌握整段語音的精華。
         
         ⚠️ 絕對要求：請務必使用「繁體中文 (Traditional Chinese)」輸出，嚴禁出現簡體字！
         
-        語音逐字稿內容：\n{transcript_text}
+        來源內容：\n{transcript_text}
         """
     return generate_text(prompt, llm_provider)
 
@@ -696,7 +746,9 @@ def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filena
             json.dumps(timed_segments, ensure_ascii=False),
             analysis_mode,
             "pending",
-            None
+            None,
+            source_type="audio",
+            mime_type=getattr(file, "content_type", None),
         )
     except Exception as e:
         stop_local_llm_after_use(llm_provider)
@@ -734,15 +786,22 @@ def reanalyze_source_data(notebook_id, source_id, llm_provider=None):
     if not row:
         return {"status": "error", "message": "找不到指定來源。"}
 
-    filename, transcript_text, timed_segments_json = row
+    filename, transcript_text, timed_segments_json, source_type, content_segments_json = row
     transcript_text = (transcript_text or "").strip()
     if not transcript_text:
-        return {"status": "error", "message": "此來源沒有可用逐字稿，請重新上傳音檔。"}
+        return {"status": "error", "message": "此來源沒有可用文字內容，請重新上傳來源檔案。"}
 
     try:
         timed_segments = json.loads(timed_segments_json) if timed_segments_json else []
         analysis = build_source_analysis(filename, transcript_text, timed_segments, llm_provider)
-        analysis_chunk_count = index_source_analysis_documents(notebook_id, source_id, filename, analysis, llm_provider)
+        analysis_chunk_count = index_source_analysis_documents(
+            notebook_id,
+            source_id,
+            filename,
+            analysis,
+            llm_provider,
+            source_type=source_type or "audio",
+        )
         analysis_json = json.dumps(
             {key: value for key, value in analysis.items() if key != "structured_knowledge"},
             ensure_ascii=False
@@ -780,6 +839,7 @@ def reanalyze_source_data(notebook_id, source_id, llm_provider=None):
         "source": {
             "id": source_id,
             "filename": filename,
+            "source_type": source_type or "audio",
             "has_transcript": True,
             "analysis_mode": analysis.get("mode"),
             "analysis_status": "completed",

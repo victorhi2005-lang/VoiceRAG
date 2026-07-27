@@ -50,13 +50,11 @@ REFERENCE_STOPWORDS = {
 }
 
 NO_ANSWER_PHRASES = (
-    "根據目前資料庫的錄音紀錄，並未提及此資訊",
-    "根據目前資料庫的錄音紀錄，並未提及",
-    "目前資料庫的錄音紀錄並未提及",
-    "資料庫的錄音紀錄並未提及",
+    "根據目前知識庫來源，並未提及此資訊",
+    "根據目前知識庫來源，並未提及",
     "並未提及此資訊",
 )
-NO_ANSWER_MESSAGE = "根據目前資料庫的錄音紀錄，並未提及此資訊。"
+NO_ANSWER_MESSAGE = "根據目前知識庫來源，並未提及此資訊。"
 ANSWER_CONTEXT_MIN_COUNT = 3
 ANSWER_CONTEXT_MAX_COUNT = 5
 ANSWER_CONTEXT_SCORE_MARGIN = 1.0
@@ -96,7 +94,7 @@ def build_shared_rag_answer_rules() -> str:
 - 如果【參考資料】直接支持答案，請用條理清晰、分點說明的方式回答。
 - 如果【參考資料】無法回答問題，請誠實回答：「{NO_ANSWER_MESSAGE}」，絕對不可以編造答案。
 - 禁止根據常識、影片標題、相似主題、外部知識或你的背景知識延伸回答。
-- 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、檔名、音檔名稱或資料片段編號。
+- 回答正文只寫答案，不要自行輸出「來源」、「參考來源」、「資料來源」、來源檔名或資料片段編號。
 - 若使用編號清單，請使用 1、2、3 依序編號，不要每一點都寫成 1。
 - 引用來源會由系統在畫面下方獨立顯示，你不需要也不可以在正文中標註來源。
 - 若有【歷史對話】，只能用來理解追問脈絡，不能把歷史對話當作新的事實來源。
@@ -180,6 +178,7 @@ CHAPTER_MIN_SECONDS = 3 * 60
 CHAPTER_MAX_SECONDS = 5 * 60
 SUMMARY_DOC_TYPES = {"global_summary", "chapter_summary"}
 TRANSCRIPT_DOC_TYPE = "transcript_chunk"
+DOCUMENT_DOC_TYPE = "document_chunk"
 GLOBAL_QUESTION_KEYWORDS = (
     "摘要", "總結", "重點", "大意", "主題", "核心", "整體", "全篇", "全段", "這份",
     "這段", "錄音主要", "內容主要", "深度解析", "解析", "介紹", "潤色", "改寫",
@@ -391,7 +390,7 @@ def build_chapter_inputs(
 
 def generate_short_summary(transcript_text: str, llm_provider: str | None = None) -> str:
     prompt = f"""
-你是一個專業的 AI 知識分析助手。請閱讀以下的口述語音逐字稿，
+你是一個專業的 AI 知識分析助手。請閱讀以下來源內容，
 進行深入的訊息分析，並給出一份精煉的「整體重點摘要」。
 
 輸出格式請嚴格遵守：
@@ -406,7 +405,7 @@ def generate_short_summary(transcript_text: str, llm_provider: str | None = None
 4. 不要輸出「核心主題」、「深度解析」、「重要細節」、「分段重點」等額外區塊。
 5. 不要輸出 Markdown 標題。
 
-語音逐字稿內容：
+來源內容：
 {transcript_text}
 """
     return generate_text(prompt, llm_provider)
@@ -414,7 +413,7 @@ def generate_short_summary(transcript_text: str, llm_provider: str | None = None
 
 def generate_quick_analysis_with_llm(transcript_text: str, llm_provider: str | None = None) -> dict[str, Any]:
     prompt = f"""
-你是一個專業的 AI 知識分析助手。請閱讀以下口述語音逐字稿，產生快速知識整理，並只輸出 JSON 物件。
+你是一個專業的 AI 知識分析助手。請閱讀以下來源內容，產生快速知識整理，並只輸出 JSON 物件。
 
 JSON 欄位固定如下：
 {{
@@ -429,7 +428,7 @@ JSON 欄位固定如下：
 3. 摘要要能幫助使用者快速掌握整段語音的精華。
 4. 推薦問題最多 3 題；如果內容太短或資訊不足，suggested_questions 請輸出空陣列。
 
-語音逐字稿內容：
+來源內容：
 {transcript_text}
 """
     response_text = generate_text(prompt, llm_provider)
@@ -443,7 +442,7 @@ JSON 欄位固定如下：
 
 def analyze_chapter_with_llm(chapter: dict[str, Any], llm_provider: str | None = None) -> dict[str, Any]:
     prompt = f"""
-你是一個專業的長音檔知識整理助手。請分析下方這一段逐字稿，並只輸出 JSON 物件。
+你是一個專業的長篇來源知識整理助手。請分析下方這一段內容，並只輸出 JSON 物件。
 
 JSON 欄位固定如下：
 {{
@@ -457,10 +456,10 @@ JSON 欄位固定如下：
 規則：
 1. 必須使用繁體中文。
 2. 不要輸出 Markdown，不要輸出 JSON 以外的文字。
-3. 只根據逐字稿內容整理，不要自行補充外部知識。
+3. 只根據來源內容整理，不要自行補充外部知識。
 
 段落時間：{chapter["time_range"]}
-逐字稿：
+來源內容：
 {chapter["text"]}
 """
     response_text = generate_text(prompt, llm_provider)
@@ -914,7 +913,15 @@ def build_reference_candidate(question: str, doc: str, metadata: Metadata, reran
             "time_range": metadata.get("time_range", "時間未記錄") if metadata else "時間未記錄",
             "char_start": evidence["char_start"],
             "char_end": evidence["char_end"],
-            "excerpt": evidence["excerpt"]
+            "excerpt": evidence["excerpt"],
+            "source_type": metadata.get("source_type", "audio") if metadata else "audio",
+            "segment_id": metadata.get("segment_id", "") if metadata else "",
+            "location_type": metadata.get("location_type", "") if metadata else "",
+            "location_label": metadata.get("location_label", "") if metadata else "",
+            "page_number": metadata.get("page_number", -1) if metadata else -1,
+            "section_title": metadata.get("section_title", "") if metadata else "",
+            "line_start": metadata.get("line_start", -1) if metadata else -1,
+            "line_end": metadata.get("line_end", -1) if metadata else -1,
         }
     }
 
@@ -1124,6 +1131,7 @@ def build_chunk_metadata(chunks, timed_segments, source_filename, source_id=None
         metadata_list.append({
             "source": source_filename,
             "source_id": source_id or "",
+            "source_type": "audio",
             "doc_type": TRANSCRIPT_DOC_TYPE,
             "chunk_index": i,
             "char_start": found_at,
@@ -1177,6 +1185,28 @@ def delete_source_chunks(collection, source_id):
     except Exception:
         pass
     return deleted_count
+
+
+def delete_source_primary_chunks(collection, source_id):
+    """只刪除原文／文件片段，保留已產生的摘要索引。"""
+    try:
+        existing = cast(dict[str, Any], collection.get(
+            where={"source_id": source_id},
+            include=["metadatas"],
+        ))
+        ids = cast(list[str], existing.get("ids") or [])
+        metadatas = cast(list[Metadata], existing.get("metadatas") or [])
+        ids_to_delete = [
+            doc_id
+            for doc_id, metadata in zip(ids, metadatas)
+            if (metadata or {}).get("doc_type", TRANSCRIPT_DOC_TYPE)
+            in {TRANSCRIPT_DOC_TYPE, DOCUMENT_DOC_TYPE}
+        ]
+        if ids_to_delete:
+            collection.delete(ids=ids_to_delete)
+        return len(ids_to_delete)
+    except Exception:
+        return 0
 
 
 def count_source_chunks(collection, source_id):
@@ -1312,7 +1342,14 @@ def build_chapter_summary_document(chapter: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part.strip())
 
 
-def index_source_analysis_documents(notebook_id, source_id, filename, analysis, llm_provider: str | None = None):
+def index_source_analysis_documents(
+    notebook_id,
+    source_id,
+    filename,
+    analysis,
+    llm_provider: str | None = None,
+    source_type: str = "audio",
+):
     collection = get_notebook_collection(notebook_id)
     delete_source_analysis_chunks(collection, source_id)
 
@@ -1326,6 +1363,7 @@ def index_source_analysis_documents(notebook_id, source_id, filename, analysis, 
         metadatas.append({
             "source": filename,
             "source_id": source_id,
+            "source_type": source_type,
             "doc_type": "global_summary",
             "chunk_index": -1,
             "chapter_index": -1,
@@ -1333,7 +1371,7 @@ def index_source_analysis_documents(notebook_id, source_id, filename, analysis, 
             "char_end": -1,
             "start_time": -1.0,
             "end_time": -1.0,
-            "time_range": "全段錄音",
+            "time_range": "完整文件" if source_type == "document" else "全段錄音",
             "analysis_version": str(analysis.get("version", ANALYSIS_VERSION))
         })
 
@@ -1347,6 +1385,7 @@ def index_source_analysis_documents(notebook_id, source_id, filename, analysis, 
         metadatas.append({
             "source": filename,
             "source_id": source_id,
+            "source_type": source_type,
             "doc_type": "chapter_summary",
             "chunk_index": chapter_index,
             "chapter_index": chapter_index,
@@ -1394,7 +1433,7 @@ def index_source_transcript(notebook_id, source_id, filename, transcript_text, t
     ).tolist()
 
     collection = get_notebook_collection(notebook_id)
-    delete_source_chunks(collection, source_id)
+    delete_source_primary_chunks(collection, source_id)
     chunk_ids = [f"{source_id}_chunk_{i}_{uuid.uuid4().hex[:6]}" for i in range(len(chunks))]
     collection.add(
         ids=chunk_ids,
@@ -1405,6 +1444,74 @@ def index_source_transcript(notebook_id, source_id, filename, transcript_text, t
 
     rebuild_bm25_index(notebook_id)
     return len(chunks)
+
+
+def index_source_document(
+    notebook_id: str,
+    source_id: str,
+    filename: str,
+    segments: list[dict[str, Any]],
+    llm_provider: str | None = None,
+) -> int:
+    """依固定文件位置區塊切分與索引，確保 chunk 不跨頁或跨章節。"""
+    documents: list[str] = []
+    metadatas: list[Metadata] = []
+    ids: list[str] = []
+    chunk_index = 0
+
+    for segment in segments:
+        segment_text = str(segment.get("text") or "").strip()
+        segment_id = str(segment.get("segment_id") or "").strip()
+        if not segment_text or not segment_id:
+            continue
+        chunks = chunk_transcript_text(segment_text, llm_provider)
+        search_position = 0
+        for local_index, chunk in enumerate(chunks):
+            chunk_text = chunk.strip()
+            if not chunk_text:
+                continue
+            found_at = segment_text.find(chunk_text, search_position)
+            if found_at < 0:
+                found_at = search_position
+            char_end = min(found_at + len(chunk_text), len(segment_text))
+            metadata: Metadata = {
+                "source": filename,
+                "source_id": source_id,
+                "source_type": "document",
+                "doc_type": DOCUMENT_DOC_TYPE,
+                "segment_id": segment_id,
+                "chunk_index": chunk_index,
+                "segment_chunk_index": local_index,
+                "char_start": found_at,
+                "char_end": char_end,
+                "start_time": -1.0,
+                "end_time": -1.0,
+                "time_range": str(segment.get("location_label") or "文件內容"),
+                "location_type": str(segment.get("location_type") or ""),
+                "location_label": str(segment.get("location_label") or "文件內容"),
+                "page_number": int(segment.get("page_number", -1) or -1),
+                "section_title": str(segment.get("section_title") or ""),
+                "line_start": int(segment.get("line_start", -1) or -1),
+                "line_end": int(segment.get("line_end", -1) or -1),
+            }
+            documents.append(chunk_text)
+            metadatas.append(metadata)
+            ids.append(f"{source_id}_document_{chunk_index}_{uuid.uuid4().hex[:6]}")
+            search_position = char_end
+            chunk_index += 1
+
+    if not documents:
+        raise ValueError("文件沒有可建立索引的文字內容")
+
+    vectors = get_embeddings_model().encode(
+        documents,
+        batch_size=get_embedding_batch_size(llm_provider),
+    ).tolist()
+    collection = get_notebook_collection(notebook_id)
+    delete_source_primary_chunks(collection, source_id)
+    collection.add(ids=ids, embeddings=vectors, documents=documents, metadatas=metadatas)
+    rebuild_bm25_index(notebook_id)
+    return len(documents)
 
 
 def update_source_filename_metadata(notebook_id, source_id, filename):
@@ -1511,7 +1618,7 @@ def generate_suggested_questions(transcript_text, llm_provider: str | None = Non
     """根據逐字稿產生推薦問題。失敗時回傳空清單，不中斷上傳流程。"""
     prompt = f"""
 你是一個專業的知識庫問題設計助手。
-請根據下方語音逐字稿的內容量、資訊密度與可提問性，自行判斷要產生 0 到 3 個使用者最可能想問的問題。
+請根據下方來源內容的內容量、資訊密度與可提問性，自行判斷要產生 0 到 3 個使用者最可能想問的問題。
 
 排序規則：
 1. 最能幫助使用者理解整體內容的問題排前面。
@@ -1525,7 +1632,7 @@ def generate_suggested_questions(transcript_text, llm_provider: str | None = Non
 4. 只輸出 JSON 字串陣列，例如 ["問題一？", "問題二？"]。
 5. 不要輸出 Markdown、編號、解釋或其他文字。
 
-語音逐字稿內容：
+來源內容：
 {transcript_text}
 """
     try:
@@ -1587,6 +1694,9 @@ def get_context_block_label(metadata: Metadata, index: int) -> str:
     if doc_type == "chapter_summary":
         time_range = metadata.get("time_range", "時間未記錄")
         return f"章節摘要 {index}（{time_range}）"
+    if doc_type == DOCUMENT_DOC_TYPE:
+        location = metadata.get("location_label", "文件內容")
+        return f"文件片段 {index}（{location}）"
     return f"原文片段 {index}"
 
 
@@ -1885,7 +1995,7 @@ def update_source_transcript(notebook_id, source_id, transcript_text, llm_provid
     if not row:
         raise SourceNotFoundError()
 
-    filename, existing_transcript, timed_segments_json, analysis_mode, analysis_status, analysis_updated_at = row
+    filename, existing_transcript, timed_segments_json, analysis_mode, analysis_status, analysis_updated_at = row[:6]
     if not existing_transcript or not existing_transcript.strip():
         return {"status": "error", "message": "此來源尚未保存逐字稿，請重新上傳音檔後再編輯。"}
 
@@ -2042,7 +2152,7 @@ def _answer_question_legacy(notebook_id: str, question: str, llm_provider: str |
 
         collection = get_notebook_collection(notebook_id)
         if collection.count() == 0:
-            return {"status": "error", "message": "此筆記本尚未上傳任何來源，請先上傳音檔。"}
+            return {"status": "error", "message": "此筆記本尚未上傳任何來源，請先新增音檔或文件。"}
 
         total_docs = collection.count()
         n_candidates = min(40, total_docs)

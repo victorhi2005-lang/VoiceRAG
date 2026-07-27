@@ -48,6 +48,9 @@ def init_db():
         "analysis_status": "ALTER TABLE sources ADD COLUMN analysis_status TEXT",
         "analysis_json": "ALTER TABLE sources ADD COLUMN analysis_json TEXT",
         "analysis_updated_at": "ALTER TABLE sources ADD COLUMN analysis_updated_at TEXT",
+        "source_type": "ALTER TABLE sources ADD COLUMN source_type TEXT DEFAULT 'audio'",
+        "mime_type": "ALTER TABLE sources ADD COLUMN mime_type TEXT",
+        "content_segments_json": "ALTER TABLE sources ADD COLUMN content_segments_json TEXT",
     }
     for column_name, migration_sql in source_migrations.items():
         if column_name not in source_columns:
@@ -170,6 +173,8 @@ def get_notebook_details_data(notebook_id):
             analysis_mode,
             analysis_status,
             analysis_updated_at,
+            COALESCE(source_type, 'audio'),
+            mime_type,
             CASE WHEN TRIM(COALESCE(transcript_text, '')) != '' THEN 1 ELSE 0 END
         FROM sources
         WHERE notebook_id = ?
@@ -187,7 +192,10 @@ def get_notebook_details_data(notebook_id):
             "analysis_mode": r[5],
             "analysis_status": r[6],
             "analysis_updated_at": r[7],
-            "has_transcript": bool(r[8])
+            "source_type": r[8] or "audio",
+            "mime_type": r[9] or "",
+            "has_transcript": bool(r[10]),
+            "has_content": bool(r[10])
         }
         for r in cursor.fetchall()
     ]
@@ -394,6 +402,49 @@ def get_source_transcript_data(notebook_id, source_id):
     }
 
 
+def get_source_content_data(notebook_id, source_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            id, filename, transcript_text, content_segments_json,
+            COALESCE(source_type, 'audio'), mime_type,
+            transcript_updated_at, indexed_at,
+            analysis_mode, analysis_status, analysis_updated_at
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+
+    segments = []
+    if row[3]:
+        try:
+            parsed = json.loads(row[3])
+            if isinstance(parsed, list):
+                segments = parsed
+        except Exception:
+            segments = []
+    return {
+        "id": row[0],
+        "filename": row[1],
+        "content_text": row[2] or "",
+        "segments": segments,
+        "source_type": row[4] or "audio",
+        "mime_type": row[5] or "",
+        "content_updated_at": row[6],
+        "indexed_at": row[7],
+        "analysis_mode": row[8],
+        "analysis_status": row[9],
+        "analysis_updated_at": row[10],
+    }
+
+
 def get_source_update_info(notebook_id, source_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -405,7 +456,10 @@ def get_source_update_info(notebook_id, source_id):
             timed_segments,
             analysis_mode,
             analysis_status,
-            analysis_updated_at
+            analysis_updated_at,
+            COALESCE(source_type, 'audio'),
+            mime_type,
+            content_segments_json
         FROM sources
         WHERE id = ? AND notebook_id = ?
         """,
@@ -421,7 +475,7 @@ def get_source_analysis_input(notebook_id, source_id):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT filename, transcript_text, timed_segments
+        SELECT filename, transcript_text, timed_segments, COALESCE(source_type, 'audio'), content_segments_json
         FROM sources
         WHERE id = ? AND notebook_id = ?
         """,
@@ -437,7 +491,7 @@ def get_source_filename_suggestion_input(notebook_id, source_id):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT filename, transcript_text, analysis_json
+        SELECT filename, transcript_text, analysis_json, COALESCE(source_type, 'audio')
         FROM sources
         WHERE id = ? AND notebook_id = ?
         """,
@@ -466,12 +520,12 @@ def get_source_audio_info(notebook_id, source_id):
     return {"id": row[0], "filename": row[1]}
 
 
-def get_source_delete_info(notebook_id, source_id):
+def get_source_file_info(notebook_id, source_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, filename
+        SELECT id, filename, COALESCE(source_type, 'audio'), mime_type
         FROM sources
         WHERE id = ? AND notebook_id = ?
         """,
@@ -481,7 +535,30 @@ def get_source_delete_info(notebook_id, source_id):
     conn.close()
     if not row:
         return None
-    return {"id": row[0], "filename": row[1]}
+    return {
+        "id": row[0],
+        "filename": row[1],
+        "source_type": row[2] or "audio",
+        "mime_type": row[3] or "",
+    }
+
+
+def get_source_delete_info(notebook_id, source_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, filename, COALESCE(source_type, 'audio')
+        FROM sources
+        WHERE id = ? AND notebook_id = ?
+        """,
+        (source_id, notebook_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "filename": row[1], "source_type": row[2] or "audio"}
 
 
 def get_notebook_delete_info(notebook_id):
@@ -498,14 +575,14 @@ def get_notebook_delete_info(notebook_id):
 
     cursor.execute(
         """
-        SELECT id, filename
+        SELECT id, filename, COALESCE(source_type, 'audio')
         FROM sources
         WHERE notebook_id = ?
         """,
         (notebook_id,)
     )
     sources = [
-        {"id": row[0], "filename": row[1]}
+        {"id": row[0], "filename": row[1], "source_type": row[2] or "audio"}
         for row in cursor.fetchall()
     ]
     conn.close()
@@ -694,9 +771,9 @@ def get_data_consistency_snapshot():
         {"id": row[0], "name": row[1]}
         for row in cursor.fetchall()
     ]
-    cursor.execute("SELECT id, notebook_id, filename FROM sources")
+    cursor.execute("SELECT id, notebook_id, filename, COALESCE(source_type, 'audio') FROM sources")
     sources = [
-        {"id": row[0], "notebook_id": row[1], "filename": row[2]}
+        {"id": row[0], "notebook_id": row[1], "filename": row[2], "source_type": row[3] or "audio"}
         for row in cursor.fetchall()
     ]
     conn.close()
@@ -712,6 +789,9 @@ def insert_source_record(
     analysis_mode=None,
     analysis_status=None,
     analysis_json=None,
+    source_type="audio",
+    mime_type=None,
+    content_segments_json=None,
 ):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
@@ -731,9 +811,12 @@ def insert_source_record(
                 analysis_mode,
                 analysis_status,
                 analysis_json,
-                analysis_updated_at
+                analysis_updated_at,
+                source_type,
+                mime_type,
+                content_segments_json
             )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             source_id,
@@ -747,7 +830,10 @@ def insert_source_record(
             analysis_mode,
             analysis_status,
             analysis_json,
-            now if analysis_status else None
+            now if analysis_status else None,
+            source_type,
+            mime_type,
+            content_segments_json,
         )
     )
     cursor.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (now, notebook_id))
