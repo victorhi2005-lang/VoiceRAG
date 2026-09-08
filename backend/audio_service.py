@@ -9,13 +9,13 @@ from typing import Any, cast
 from db import (
     delete_notebook_record,
     delete_source_record,
+    get_all_source_filenames,
     get_data_consistency_snapshot,
     get_notebook_delete_info,
     get_source_analysis_input,
     get_source_audio_info,
     get_source_delete_info,
     get_source_filename_suggestion_input,
-    get_source_filenames,
     get_source_file_info,
     insert_ai_summary_message,
     insert_source_record,
@@ -138,7 +138,7 @@ def list_audio_upload_files():
 
 
 def get_fallback_recording_filename(notebook_id, extension):
-    existing = set(get_source_filenames(notebook_id))
+    existing = set(get_all_source_filenames())
     counter = 1
     while True:
         filename = sanitize_filename(f"錄音{counter}{extension}", fallback=f"錄音{counter}", extension=extension)
@@ -246,7 +246,7 @@ def has_filename_topic_overlap(original_stem, ai_title):
 def get_fallback_ai_filename(notebook_id, extension, fallback_filename=None, current_filename=None):
     if fallback_filename:
         filename = sanitize_filename(fallback_filename, fallback="audio", extension=extension)
-        return ensure_unique_filename(filename, get_source_filenames(notebook_id), ignore_filename=current_filename)
+        return ensure_unique_filename(filename, get_all_source_filenames(current_filename), ignore_filename=current_filename)
     return get_fallback_recording_filename(notebook_id, extension)
 
 
@@ -313,7 +313,7 @@ def generate_ai_audio_filename(
         return fallback_filename
 
     filename = sanitize_filename(title, fallback=os.path.splitext(fallback_filename)[0], extension=extension)
-    return ensure_unique_filename(filename, get_source_filenames(notebook_id), ignore_filename=current_filename)
+    return ensure_unique_filename(filename, get_all_source_filenames(current_filename), ignore_filename=current_filename)
 
 
 def generate_analysis_title_filename(notebook_id, analysis, extension, fallback_filename, current_filename=None):
@@ -328,7 +328,7 @@ def generate_analysis_title_filename(notebook_id, analysis, extension, fallback_
 
     fallback_stem = os.path.splitext(fallback_filename or "audio")[0]
     filename = sanitize_filename(title, fallback=fallback_stem, extension=extension)
-    return ensure_unique_filename(filename, get_source_filenames(notebook_id), ignore_filename=current_filename)
+    return ensure_unique_filename(filename, get_all_source_filenames(current_filename), ignore_filename=current_filename)
 
 
 def rename_audio_file(current_path, new_filename):
@@ -350,7 +350,7 @@ def rename_source_filename(notebook_id, source_id, requested_filename):
     old_filename = source["filename"]
     old_ext = os.path.splitext(old_filename)[1] or ".webm"
     new_filename = sanitize_filename(requested_filename, fallback="錄音", extension=old_ext)
-    existing = [name for name in get_source_filenames(notebook_id) if name != old_filename]
+    existing = get_all_source_filenames(ignore_filename=old_filename)
     new_filename = ensure_unique_filename(new_filename, existing, ignore_filename=old_filename)
 
     if new_filename == old_filename:
@@ -500,8 +500,8 @@ def delete_notebook_data(notebook_id):
     }
 
 
-def check_data_consistency():
-    sqlite_snapshot = get_data_consistency_snapshot()
+def check_data_consistency(user_id=None):
+    sqlite_snapshot = get_data_consistency_snapshot(user_id)
     chroma_snapshot = cast(dict[str, Any], get_chroma_consistency_snapshot())
     audio_files = set(list_audio_upload_files())
     document_files = {
@@ -513,6 +513,20 @@ def check_data_consistency():
     notebooks = sqlite_snapshot["notebooks"]
     sources = sqlite_snapshot["sources"]
     notebook_ids = {notebook["id"] for notebook in notebooks}
+    if user_id is not None:
+        chroma_snapshot["collections"] = [
+            name for name in chroma_snapshot["collections"]
+            if name.replace("notebook_", "", 1) in notebook_ids
+        ]
+        chroma_snapshot["source_chunks_by_notebook"] = {
+            notebook_id: chunk_info
+            for notebook_id, chunk_info in chroma_snapshot["source_chunks_by_notebook"].items()
+            if notebook_id in notebook_ids
+        }
+        chroma_snapshot["errors"] = [
+            error for error in chroma_snapshot["errors"]
+            if str(error.get("collection", "")).replace("notebook_", "", 1) in notebook_ids
+        ]
     source_ids = {source["id"] for source in sources}
     audio_source_filenames = {
         os.path.basename(source["filename"] or "")
@@ -603,20 +617,21 @@ def check_data_consistency():
                 "message": "ChromaDB 有 chunks 缺少 source_id metadata。"
             })
 
-    for filename in sorted(audio_files - audio_source_filenames):
-        issues.append({
-            "type": "orphan_audio_file",
-            "severity": "info",
-            "filename": filename,
-            "message": "audio_uploads 有音檔，但 SQLite sources 沒有對應紀錄。"
-        })
-    for filename in sorted(document_files - document_source_filenames):
-        issues.append({
-            "type": "orphan_document_file",
-            "severity": "info",
-            "filename": filename,
-            "message": "document_uploads 有文件，但 SQLite sources 沒有對應紀錄。"
-        })
+    if user_id is None:
+        for filename in sorted(audio_files - audio_source_filenames):
+            issues.append({
+                "type": "orphan_audio_file",
+                "severity": "info",
+                "filename": filename,
+                "message": "audio_uploads 有音檔，但 SQLite sources 沒有對應紀錄。"
+            })
+        for filename in sorted(document_files - document_source_filenames):
+            issues.append({
+                "type": "orphan_document_file",
+                "severity": "info",
+                "filename": filename,
+                "message": "document_uploads 有文件，但 SQLite sources 沒有對應紀錄。"
+            })
 
     for error in chroma_snapshot["errors"]:
         issues.append({
@@ -631,8 +646,8 @@ def check_data_consistency():
         "summary": {
             "notebooks": len(notebooks),
             "sources": len(sources),
-            "audio_files": len(audio_files),
-            "document_files": len(document_files),
+            "audio_files": len(audio_source_filenames & audio_files),
+            "document_files": len(document_source_filenames & document_files),
             "chroma_collections": len(chroma_collections),
             "issues": len(issues)
         },
@@ -720,12 +735,12 @@ def process_audio_upload(notebook_id, file, auto_filename=False, fallback_filena
                 fallback="recording",
                 extension=original_ext
             ),
-            get_source_filenames(notebook_id)
+            get_all_source_filenames()
         )
     else:
         upload_filename = ensure_unique_filename(
             sanitize_filename(file.filename, fallback="audio", extension=original_ext),
-            get_source_filenames(notebook_id)
+            get_all_source_filenames()
         )
     file_path = save_uploaded_audio(file, upload_filename)
 

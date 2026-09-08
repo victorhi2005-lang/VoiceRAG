@@ -7,6 +7,11 @@ class NotebookUpdate(BaseModel):
     name: str
 
 
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+
+
 class TranscriptUpdateRequest(BaseModel):
     transcript_text: str
     llm_provider: str | None = None

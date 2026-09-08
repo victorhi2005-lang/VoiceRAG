@@ -143,20 +143,79 @@
         class="fixed right-4 top-4 z-[80] w-[min(24rem,calc(100vw-2rem))] space-y-3 pointer-events-none"
         aria-live="polite" aria-atomic="false"></div>
 
+    <!-- 本機帳號登入／註冊 -->
+    <div id="auth-view" class="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-[#131314] p-6">
+        <div class="w-full max-w-md rounded-2xl bg-[#1e1f22] p-7 shadow-2xl">
+            <div class="mb-6 text-center">
+                <img src="/static/voicerag-icon.svg?v=2" alt="VoiceRAG" class="mx-auto mb-4 h-12 w-12">
+                <h1 class="text-2xl font-semibold text-gray-100">VoiceRAG</h1>
+            </div>
+            <div class="mb-5 grid grid-cols-2 rounded-xl bg-[#17181b] p-1">
+                <button id="loginTab" type="button" onclick="setAuthMode('login')"
+                    class="rounded-lg px-3 py-2 text-sm font-medium transition">登入</button>
+                <button id="registerTab" type="button" onclick="setAuthMode('register')"
+                    class="rounded-lg px-3 py-2 text-sm font-medium transition">註冊</button>
+            </div>
+            <form id="authForm" class="space-y-4" onsubmit="handleAuthSubmit(event)">
+                <div>
+                    <label for="authUsername" class="mb-2 block text-sm font-medium text-gray-300">使用者名稱</label>
+                    <input id="authUsername" name="username" type="text" minlength="3" maxlength="20" required
+                        autocomplete="username" placeholder="3～20 字，不可包含空白"
+                        class="w-full rounded-xl bg-[#131314] px-4 py-3 text-gray-100 shadow-inner outline-none transition placeholder:text-gray-600 focus:bg-[#17181b]">
+                </div>
+                <div>
+                    <label for="authPassword" class="mb-2 block text-sm font-medium text-gray-300">密碼</label>
+                    <input id="authPassword" name="password" type="password" minlength="6" required
+                        autocomplete="current-password" placeholder="至少 6 個字元"
+                        class="w-full rounded-xl bg-[#131314] px-4 py-3 text-gray-100 shadow-inner outline-none transition placeholder:text-gray-600 focus:bg-[#17181b]">
+                </div>
+                <div id="confirmPasswordGroup" class="hidden">
+                    <label for="authPasswordConfirm" class="mb-2 block text-sm font-medium text-gray-300">確認密碼</label>
+                    <input id="authPasswordConfirm" name="passwordConfirm" type="password" minlength="6"
+                        autocomplete="new-password" placeholder="再次輸入密碼"
+                        class="w-full rounded-xl bg-[#131314] px-4 py-3 text-gray-100 shadow-inner outline-none transition placeholder:text-gray-600 focus:bg-[#17181b]">
+                </div>
+                <p id="authError" class="min-h-[1.25rem] text-sm text-red-300" role="alert"></p>
+                <button id="authSubmitBtn" type="submit"
+                    class="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-[#333] disabled:text-gray-500">登入</button>
+            </form>
+        </div>
+    </div>
+
     <!-- 筆記本導覽首頁 (Dashboard View) -->
-    <div id="dashboard-view" class="absolute inset-0 z-20 flex flex-col p-10 overflow-y-auto bg-[#131314]">
+    <div id="dashboard-view" class="absolute inset-0 z-20 flex hidden flex-col p-10 overflow-y-auto bg-[#131314]">
         <div class="max-w-6xl mx-auto w-full">
             <div class="flex items-center justify-between gap-4 mb-8">
                 <h1 class="text-xl font-semibold text-gray-200">最近開啟的筆記本</h1>
-                <button type="button" onclick="openSettingsModal()"
-                    class="group inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-400 hover:bg-[#25272c] hover:text-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-400 transition"
-                    title="開啟設定" aria-label="開啟設定">
+                <div class="flex items-center gap-2">
+                    <button type="button" onclick="openSettingsModal()"
+                        class="group inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-400 hover:bg-[#25272c] hover:text-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-400 transition"
+                        title="開啟設定" aria-label="開啟設定">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8"
                         stroke="currentColor" class="h-6 w-6 transition-transform duration-200 group-hover:scale-105">
                         <path stroke-linecap="round" stroke-linejoin="round"
                             d="M4 6h9m4 0h3M13 4v4M4 12h3m4 0h9M7 10v4M4 18h10m4 0h2M14 16v4" />
                     </svg>
-                </button>
+                    </button>
+                    <div class="relative">
+                        <button id="userMenuButton" type="button" onclick="toggleUserMenu(event)"
+                            class="inline-flex h-10 items-center gap-2 rounded-lg border border-[#333] bg-[#1e1f22] px-3 text-sm text-gray-300 transition hover:bg-[#25272c] hover:text-white"
+                            aria-haspopup="menu" aria-expanded="false">
+                            <span id="currentUsername" class="max-w-32 truncate">使用者</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"
+                                class="block h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden="true">
+                                <path fill-rule="evenodd"
+                                    d="M5.22 7.22a.75.75 0 0 1 1.06 0L10 10.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.28a.75.75 0 0 1 0-1.06Z"
+                                    clip-rule="evenodd" />
+                            </svg>
+                        </button>
+                        <div id="userMenu" role="menu"
+                            class="hidden absolute right-0 z-40 mt-2 w-36 overflow-hidden rounded-lg border border-[#333] bg-[#1e1f22] py-1 shadow-xl">
+                            <button type="button" onclick="logoutUser()"
+                                class="w-full px-4 py-2 text-left text-sm text-red-300 transition hover:bg-[#333] hover:text-red-200">登出</button>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6" id="notebook-grid">
 
@@ -607,6 +666,9 @@
 
     <script>
         // 全域狀態：當前選擇的筆記本 ID
+        const nativeFetch = window.fetch.bind(window);
+        let currentUser = null;
+        let authMode = 'login';
         let currentNotebookId = null;
         let renameTargetId = null;
         let renameMode = 'notebook';
@@ -649,6 +711,128 @@
         let diagramWorkspaceCollapsed = localStorage.getItem(DIAGRAM_WORKSPACE_STORAGE_KEY) !== 'false';
         let diagramWorkspaceWidth = Number(localStorage.getItem(DIAGRAM_WORKSPACE_WIDTH_STORAGE_KEY)) || DIAGRAM_WORKSPACE_DEFAULT_WIDTH;
         let isDiagramWorkspaceResizing = false;
+
+        async function authenticatedFetch(input, init) {
+            const response = await nativeFetch(input, init);
+            const url = typeof input === 'string' ? input : (input?.url || '');
+            if (response.status === 401 && !url.includes('/api/auth/')) {
+                showAuthView('登入已逾時，請重新登入。');
+            }
+            return response;
+        }
+
+        window.fetch = authenticatedFetch;
+
+        function setAuthMode(mode) {
+            authMode = mode === 'register' ? 'register' : 'login';
+            const isRegister = authMode === 'register';
+            document.getElementById('confirmPasswordGroup').classList.toggle('hidden', !isRegister);
+            const confirmInput = document.getElementById('authPasswordConfirm');
+            confirmInput.required = isRegister;
+            confirmInput.value = '';
+            document.getElementById('authPassword').autocomplete = isRegister ? 'new-password' : 'current-password';
+            document.getElementById('authSubmitBtn').textContent = isRegister ? '建立帳號' : '登入';
+            document.getElementById('authError').textContent = '';
+
+            const activeClass = 'bg-[#333] text-white shadow';
+            const inactiveClass = 'text-gray-500 hover:text-gray-200';
+            document.getElementById('loginTab').className = `rounded-lg px-3 py-2 text-sm font-medium transition ${isRegister ? inactiveClass : activeClass}`;
+            document.getElementById('registerTab').className = `rounded-lg px-3 py-2 text-sm font-medium transition ${isRegister ? activeClass : inactiveClass}`;
+        }
+
+        function showAuthView(message = '') {
+            currentUser = null;
+            currentNotebookId = null;
+            notebookDiagrams = [];
+            document.getElementById('workspace-view').classList.add('hidden');
+            document.getElementById('dashboard-view').classList.add('hidden');
+            document.getElementById('auth-view').classList.remove('hidden');
+            document.getElementById('authError').textContent = message;
+            document.getElementById('userMenu').classList.add('hidden');
+        }
+
+        function showDashboardForUser(user) {
+            currentUser = user;
+            document.getElementById('currentUsername').textContent = user.username;
+            document.getElementById('auth-view').classList.add('hidden');
+            document.getElementById('workspace-view').classList.add('hidden');
+            document.getElementById('dashboard-view').classList.remove('hidden');
+        }
+
+        async function handleAuthSubmit(event) {
+            event.preventDefault();
+            const username = document.getElementById('authUsername').value.trim();
+            const password = document.getElementById('authPassword').value;
+            const confirmPassword = document.getElementById('authPasswordConfirm').value;
+            const errorElement = document.getElementById('authError');
+            const submitButton = document.getElementById('authSubmitBtn');
+            errorElement.textContent = '';
+
+            if (/\s/.test(username)) {
+                errorElement.textContent = '使用者名稱不可包含空白。';
+                return;
+            }
+            if (authMode === 'register' && password !== confirmPassword) {
+                errorElement.textContent = '兩次輸入的密碼不一致。';
+                return;
+            }
+
+            submitButton.disabled = true;
+            submitButton.textContent = authMode === 'register' ? '建立中…' : '登入中…';
+            try {
+                const response = await nativeFetch(`/api/auth/${authMode}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || '操作失敗，請稍後再試。');
+                }
+                document.getElementById('authForm').reset();
+                showDashboardForUser(data.user);
+                await Promise.all([fetchLlmProviders(), fetchNotebooks()]);
+            } catch (error) {
+                errorElement.textContent = error.message || '操作失敗，請稍後再試。';
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = authMode === 'register' ? '建立帳號' : '登入';
+            }
+        }
+
+        function toggleUserMenu(event) {
+            event.stopPropagation();
+            const menu = document.getElementById('userMenu');
+            const button = document.getElementById('userMenuButton');
+            const willOpen = menu.classList.contains('hidden');
+            menu.classList.toggle('hidden', !willOpen);
+            button.setAttribute('aria-expanded', String(willOpen));
+        }
+
+        async function logoutUser() {
+            try {
+                await nativeFetch('/api/auth/logout', { method: 'POST' });
+            } finally {
+                document.getElementById('authForm').reset();
+                setAuthMode('login');
+                showAuthView();
+            }
+        }
+
+        async function restoreSession() {
+            try {
+                const response = await nativeFetch('/api/auth/me');
+                if (!response.ok) {
+                    showAuthView();
+                    return;
+                }
+                const data = await response.json();
+                showDashboardForUser(data.user);
+                await Promise.all([fetchLlmProviders(), fetchNotebooks()]);
+            } catch (error) {
+                showAuthView('無法連線到 VoiceRAG 後端。');
+            }
+        }
 
         if (window.mermaid) {
             mermaid.initialize({
@@ -1747,8 +1931,8 @@
 
         // 頁面載入時，獲取筆記本列表
         document.addEventListener('DOMContentLoaded', () => {
-            fetchLlmProviders();
-            fetchNotebooks();
+            setAuthMode('login');
+            restoreSession();
         });
 
         // 獲取並渲染筆記本列表
@@ -2207,6 +2391,10 @@
         document.addEventListener('click', function (event) {
             if (!event.target.closest('.dropdown')) {
                 closeAllDropdowns();
+            }
+            if (!event.target.closest('#userMenu') && !event.target.closest('#userMenuButton')) {
+                document.getElementById('userMenu').classList.add('hidden');
+                document.getElementById('userMenuButton').setAttribute('aria-expanded', 'false');
             }
         });
 

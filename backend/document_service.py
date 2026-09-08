@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from db import (
+    get_all_source_filenames,
     get_source_file_info,
-    get_source_filenames,
     insert_source_record,
 )
 from rag_service import delete_source_from_index, index_source_document, should_use_deep_analysis
@@ -65,7 +65,7 @@ def sanitize_document_filename(filename: str) -> str:
 
 
 def ensure_unique_document_filename(notebook_id: str, filename: str, ignore_filename: str | None = None) -> str:
-    existing = set(get_source_filenames(notebook_id))
+    existing = set(get_all_source_filenames(ignore_filename=ignore_filename))
     stem = Path(filename).stem
     extension = Path(filename).suffix
     candidate = filename

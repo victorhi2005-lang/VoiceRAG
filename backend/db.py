@@ -17,13 +17,39 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS notebooks (
             id TEXT PRIMARY KEY,
             name TEXT,
             icon TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            user_id TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     ''')
+    cursor.execute("PRAGMA table_info(notebooks)")
+    notebook_columns = [row[1] for row in cursor.fetchall()]
+    if "user_id" not in notebook_columns:
+        cursor.execute("ALTER TABLE notebooks ADD COLUMN user_id TEXT REFERENCES users(id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notebooks_user_id ON notebooks(user_id)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sources (
             id TEXT PRIMARY KEY,
@@ -109,10 +135,16 @@ def init_db():
     conn.close()
 
 
-def get_notebooks_data():
+def get_notebooks_data(user_id=None):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, icon, updated_at FROM notebooks ORDER BY updated_at DESC")
+    if user_id is None:
+        cursor.execute("SELECT id, name, icon, updated_at FROM notebooks ORDER BY updated_at DESC")
+    else:
+        cursor.execute(
+            "SELECT id, name, icon, updated_at FROM notebooks WHERE user_id = ? ORDER BY updated_at DESC",
+            (user_id,),
+        )
     notebooks = []
     for row in cursor.fetchall():
         nid = row[0]
@@ -129,7 +161,7 @@ def get_notebooks_data():
     return notebooks
 
 
-def create_notebook_record():
+def create_notebook_record(user_id=None):
     nid = str(uuid.uuid4())
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     name = "未命名筆記本"
@@ -138,13 +170,108 @@ def create_notebook_record():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO notebooks (id, name, icon, updated_at) VALUES (?, ?, ?, ?)",
-        (nid, name, icon, now)
+        "INSERT INTO notebooks (id, name, icon, updated_at, user_id) VALUES (?, ?, ?, ?, ?)",
+        (nid, name, icon, now, user_id)
     )
     conn.commit()
     conn.close()
 
     return {"id": nid, "name": name, "icon": icon, "updated_at": now, "source_count": 0}
+
+
+def create_user_record(username, password_hash):
+    user_id = str(uuid.uuid4())
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        is_first_user = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+        cursor.execute(
+            "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, username, password_hash, now),
+        )
+        if is_first_user:
+            cursor.execute(
+                "UPDATE notebooks SET user_id = ? WHERE user_id IS NULL",
+                (user_id,),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"id": user_id, "username": username, "created_at": now}
+
+
+def get_user_by_username(username):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id, username, password_hash, created_at FROM users WHERE username = ? COLLATE NOCASE",
+        (username,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "username": row[1], "password_hash": row[2], "created_at": row[3]}
+
+
+def get_user_by_id(user_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id, username, created_at FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "username": row[1], "created_at": row[2]}
+
+
+def create_session_record(token_hash, user_id, created_at, expires_at):
+    conn = get_connection()
+    conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (created_at,))
+    conn.execute(
+        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token_hash, user_id, created_at, expires_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_session_user(token_hash, now_timestamp):
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT users.id, users.username, users.created_at
+        FROM sessions
+        JOIN users ON users.id = sessions.user_id
+        WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+        """,
+        (token_hash, now_timestamp),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "username": row[1], "created_at": row[2]}
+
+
+def delete_session_record(token_hash):
+    conn = get_connection()
+    conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+    conn.commit()
+    conn.close()
+
+
+def notebook_belongs_to_user(notebook_id, user_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM notebooks WHERE id = ? AND user_id = ?",
+        (notebook_id, user_id),
+    ).fetchone()
+    conn.close()
+    return row is not None
 
 
 def update_notebook_name(notebook_id, name):
@@ -602,6 +729,19 @@ def get_source_filenames(notebook_id):
     return filenames
 
 
+def get_all_source_filenames(ignore_filename=None):
+    conn = get_connection()
+    if ignore_filename is None:
+        rows = conn.execute("SELECT filename FROM sources").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT filename FROM sources WHERE filename != ?",
+            (ignore_filename,),
+        ).fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+
 def update_source_filename_record(notebook_id, source_id, filename):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
@@ -763,15 +903,29 @@ def clear_all_records():
     conn.close()
 
 
-def get_data_consistency_snapshot():
+def get_data_consistency_snapshot(user_id=None):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name FROM notebooks")
+    if user_id is None:
+        cursor.execute("SELECT id, name FROM notebooks")
+    else:
+        cursor.execute("SELECT id, name FROM notebooks WHERE user_id = ?", (user_id,))
     notebooks = [
         {"id": row[0], "name": row[1]}
         for row in cursor.fetchall()
     ]
-    cursor.execute("SELECT id, notebook_id, filename, COALESCE(source_type, 'audio') FROM sources")
+    if user_id is None:
+        cursor.execute("SELECT id, notebook_id, filename, COALESCE(source_type, 'audio') FROM sources")
+    else:
+        cursor.execute(
+            """
+            SELECT sources.id, sources.notebook_id, sources.filename, COALESCE(sources.source_type, 'audio')
+            FROM sources
+            JOIN notebooks ON notebooks.id = sources.notebook_id
+            WHERE notebooks.user_id = ?
+            """,
+            (user_id,),
+        )
     sources = [
         {"id": row[0], "notebook_id": row[1], "filename": row[2], "source_type": row[3] or "audio"}
         for row in cursor.fetchall()

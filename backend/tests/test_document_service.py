@@ -14,12 +14,14 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 def load_document_service():
     db_stub = types.ModuleType("db")
     for name in (
+        "get_all_source_filenames",
         "get_source_file_info",
         "get_source_filenames",
         "insert_source_record",
     ):
         setattr(db_stub, name, mock.Mock())
     db_stub.get_source_filenames.return_value = []
+    db_stub.get_all_source_filenames.return_value = []
 
     rag_stub = types.ModuleType("rag_service")
     rag_stub.delete_source_from_index = mock.Mock()
@@ -324,7 +326,7 @@ class DocumentServiceTests(unittest.TestCase):
             upload_dir = Path(temp_dir)
             with (
                 mock.patch.object(document_service, "DOCUMENT_UPLOAD_DIR", upload_dir),
-                mock.patch.object(document_service, "get_source_filenames", return_value=[]),
+                mock.patch.object(document_service, "get_all_source_filenames", return_value=[]),
                 mock.patch.object(document_service, "index_source_document", return_value=2),
                 mock.patch.object(document_service, "insert_source_record", return_value="now") as insert_mock,
             ):

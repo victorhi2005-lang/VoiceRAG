@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,7 +22,16 @@ from db import (
     mark_suggested_question_used_record,
     update_notebook_name,
 )
+from auth_service import (
+    authenticate_user,
+    end_session,
+    register_user,
+    require_notebook_owner,
+    require_user,
+    start_session,
+)
 from schemas import (
+    AuthRequest,
     DiagramRequest,
     NotebookUpdate,
     QuestionRequest,
@@ -81,38 +90,65 @@ from rag_service import (
 )
 
 
+@app.post("/api/auth/register")
+async def register(data: AuthRequest, response: Response):
+    user = register_user(data.username, data.password)
+    start_session(response, user["id"])
+    return {"status": "success", "user": {"id": user["id"], "username": user["username"]}}
+
+
+@app.post("/api/auth/login")
+async def login(data: AuthRequest, response: Response):
+    user = authenticate_user(data.username, data.password)
+    start_session(response, user["id"])
+    return {"status": "success", "user": {"id": user["id"], "username": user["username"]}}
+
+
+@app.get("/api/auth/me")
+async def get_current_user(current_user: dict = Depends(require_user)):
+    return {"status": "success", "user": {"id": current_user["id"], "username": current_user["username"]}}
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response):
+    end_session(request, response)
+    return {"status": "success"}
+
+
 @app.get("/api/notebooks/")
-async def get_notebooks():
-    return {"status": "success", "notebooks": get_notebooks_data()}
+async def get_notebooks(current_user: dict = Depends(require_user)):
+    return {"status": "success", "notebooks": get_notebooks_data(current_user["id"])}
 
 
 @app.get("/api/llm-providers/")
-async def get_llm_providers():
+async def get_llm_providers(current_user: dict = Depends(require_user)):
     return get_llm_provider_config()
 
 
 @app.post("/api/llm-providers/preload")
-async def preload_llm_provider(llm_provider: str | None = None):
+async def preload_llm_provider(llm_provider: str | None = None, current_user: dict = Depends(require_user)):
     provider = normalize_llm_provider(llm_provider)
     preload_models_for_provider(provider)
     return {"status": "success", "provider": provider}
 
 
 @app.post("/api/notebooks/")
-async def create_notebook():
-    notebook = create_notebook_record()
+async def create_notebook(current_user: dict = Depends(require_user)):
+    notebook = create_notebook_record(current_user["id"])
     get_notebook_collection(notebook["id"])
     return {"status": "success", "notebook": notebook}
 
 
 @app.put("/api/notebooks/{notebook_id}")
-async def update_notebook(notebook_id: str, data: NotebookUpdate):
+async def update_notebook(notebook_id: str, data: NotebookUpdate, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     update_notebook_name(notebook_id, data.name)
     return {"status": "success"}
 
 
 @app.get("/api/notebooks/{notebook_id}")
-async def get_notebook_details(notebook_id: str):
+async def get_notebook_details(notebook_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     details = get_notebook_details_data(notebook_id)
     return {
         "status": "success",
@@ -124,12 +160,14 @@ async def get_notebook_details(notebook_id: str):
 
 
 @app.get("/api/notebooks/{notebook_id}/diagrams")
-async def get_notebook_diagrams(notebook_id: str):
+async def get_notebook_diagrams(notebook_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     return {"status": "success", "diagrams": get_diagrams_data(notebook_id)}
 
 
 @app.post("/api/notebooks/{notebook_id}/diagrams")
-async def create_notebook_diagram(notebook_id: str, request: DiagramRequest):
+async def create_notebook_diagram(notebook_id: str, request: DiagramRequest, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     result = generate_notebook_diagram(
         notebook_id,
         request.prompt,
@@ -142,7 +180,8 @@ async def create_notebook_diagram(notebook_id: str, request: DiagramRequest):
 
 
 @app.delete("/api/notebooks/{notebook_id}/diagrams/{diagram_id}")
-async def delete_notebook_diagram(notebook_id: str, diagram_id: int):
+async def delete_notebook_diagram(notebook_id: str, diagram_id: int, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     result = delete_diagram_record(notebook_id, diagram_id)
     if not result:
         raise HTTPException(status_code=404, detail="找不到圖表")
@@ -150,13 +189,15 @@ async def delete_notebook_diagram(notebook_id: str, diagram_id: int):
 
 
 @app.post("/api/notebooks/{notebook_id}/suggested-questions/{question_id}/used")
-async def mark_suggested_question_used(notebook_id: str, question_id: int):
+async def mark_suggested_question_used(notebook_id: str, question_id: int, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     mark_suggested_question_used_record(notebook_id, question_id)
     return {"status": "success"}
 
 
 @app.get("/api/notebooks/{notebook_id}/sources/{source_id}/transcript")
-async def get_source_transcript(notebook_id: str, source_id: str):
+async def get_source_transcript(notebook_id: str, source_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     source = get_source_transcript_data(notebook_id, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="找不到指定來源")
@@ -164,7 +205,8 @@ async def get_source_transcript(notebook_id: str, source_id: str):
 
 
 @app.put("/api/notebooks/{notebook_id}/sources/{source_id}/transcript")
-async def update_source_transcript_endpoint(notebook_id: str, source_id: str, request: TranscriptUpdateRequest):
+async def update_source_transcript_endpoint(notebook_id: str, source_id: str, request: TranscriptUpdateRequest, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     try:
         return update_source_transcript(notebook_id, source_id, request.transcript_text, request.llm_provider)
     except SourceNotFoundError:
@@ -172,7 +214,8 @@ async def update_source_transcript_endpoint(notebook_id: str, source_id: str, re
 
 
 @app.post("/api/notebooks/{notebook_id}/sources/{source_id}/transcript/ai-edit")
-async def ai_edit_source_transcript_endpoint(notebook_id: str, source_id: str, request: TranscriptAiEditRequest):
+async def ai_edit_source_transcript_endpoint(notebook_id: str, source_id: str, request: TranscriptAiEditRequest, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     try:
         result = ai_edit_source_transcript(
             notebook_id,
@@ -193,7 +236,8 @@ async def ai_edit_source_transcript_endpoint(notebook_id: str, source_id: str, r
 
 
 @app.get("/api/notebooks/{notebook_id}/sources/{source_id}/audio")
-async def get_source_audio(notebook_id: str, source_id: str):
+async def get_source_audio(notebook_id: str, source_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     audio = get_audio_file_path(notebook_id, source_id)
     if not audio:
         raise HTTPException(status_code=404, detail="找不到來源音檔")
@@ -201,7 +245,8 @@ async def get_source_audio(notebook_id: str, source_id: str):
 
 
 @app.get("/api/notebooks/{notebook_id}/sources/{source_id}/file")
-async def get_source_file(notebook_id: str, source_id: str):
+async def get_source_file(notebook_id: str, source_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     document = get_document_file_path(notebook_id, source_id)
     if document:
         media_type, disposition = get_document_delivery_options(
@@ -223,7 +268,8 @@ async def get_source_file(notebook_id: str, source_id: str):
 
 
 @app.get("/api/notebooks/{notebook_id}/sources/{source_id}/content")
-async def get_source_content(notebook_id: str, source_id: str):
+async def get_source_content(notebook_id: str, source_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     source = get_source_content_data(notebook_id, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="找不到指定來源")
@@ -231,7 +277,8 @@ async def get_source_content(notebook_id: str, source_id: str):
 
 
 @app.delete("/api/notebooks/{notebook_id}/sources/{source_id}")
-async def delete_source(notebook_id: str, source_id: str):
+async def delete_source(notebook_id: str, source_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     result = delete_source_data(notebook_id, source_id)
     if result.get("status") != "success":
         raise HTTPException(status_code=404, detail=result.get("message", "找不到指定來源"))
@@ -239,7 +286,8 @@ async def delete_source(notebook_id: str, source_id: str):
 
 
 @app.put("/api/notebooks/{notebook_id}/sources/{source_id}/filename")
-async def update_source_filename(notebook_id: str, source_id: str, request: SourceFilenameUpdate):
+async def update_source_filename(notebook_id: str, source_id: str, request: SourceFilenameUpdate, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     result = rename_source_filename(notebook_id, source_id, request.filename)
     if result.get("status") != "success":
         raise HTTPException(status_code=404, detail=result.get("message", "找不到指定來源"))
@@ -247,7 +295,8 @@ async def update_source_filename(notebook_id: str, source_id: str, request: Sour
 
 
 @app.post("/api/notebooks/{notebook_id}/sources/{source_id}/filename/suggest")
-async def suggest_source_filename_endpoint(notebook_id: str, source_id: str, llm_provider: str | None = None):
+async def suggest_source_filename_endpoint(notebook_id: str, source_id: str, llm_provider: str | None = None, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     result = suggest_source_filename(notebook_id, source_id, llm_provider)
     if result.get("status") != "success":
         message = result.get("message", "AI 取檔名失敗")
@@ -257,7 +306,8 @@ async def suggest_source_filename_endpoint(notebook_id: str, source_id: str, llm
 
 
 @app.post("/api/notebooks/{notebook_id}/sources/{source_id}/reanalyze")
-async def reanalyze_source(notebook_id: str, source_id: str, llm_provider: str | None = None):
+async def reanalyze_source(notebook_id: str, source_id: str, llm_provider: str | None = None, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     result = reanalyze_source_data(notebook_id, source_id, llm_provider)
     if result.get("status") != "success":
         message = result.get("message", "重新分析失敗")
@@ -267,12 +317,12 @@ async def reanalyze_source(notebook_id: str, source_id: str, llm_provider: str |
 
 
 @app.get("/api/data-consistency")
-async def get_data_consistency():
-    return check_data_consistency()
+async def get_data_consistency(current_user: dict = Depends(require_user)):
+    return check_data_consistency(current_user["id"])
 
 
 @app.post("/api/maintenance/clear-orphan-chroma")
-async def clear_orphan_chroma_data_endpoint():
+async def clear_orphan_chroma_data_endpoint(current_user: dict = Depends(require_user)):
     try:
         return clear_orphan_chroma_data()
     except Exception as error:
@@ -280,7 +330,8 @@ async def clear_orphan_chroma_data_endpoint():
 
 
 @app.delete("/api/notebooks/{notebook_id}")
-async def delete_notebook(notebook_id: str):
+async def delete_notebook(notebook_id: str, current_user: dict = Depends(require_user)):
+    require_notebook_owner(notebook_id, current_user["id"])
     result = delete_notebook_data(notebook_id)
     if result.get("status") != "success":
         raise HTTPException(status_code=404, detail=result.get("message", "Notebook not found"))
@@ -293,8 +344,10 @@ async def upload_audio(
     file: UploadFile = File(...),
     auto_filename: bool = Form(False),
     fallback_filename: str | None = Form(None),
-    llm_provider: str | None = Form(None)
+    llm_provider: str | None = Form(None),
+    current_user: dict = Depends(require_user),
 ):
+    require_notebook_owner(notebook_id, current_user["id"])
     return process_audio_upload(notebook_id, file, auto_filename, fallback_filename, llm_provider)
 
 
@@ -305,7 +358,9 @@ async def upload_source(
     auto_filename: bool = Form(False),
     fallback_filename: str | None = Form(None),
     llm_provider: str | None = Form(None),
+    current_user: dict = Depends(require_user),
 ):
+    require_notebook_owner(notebook_id, current_user["id"])
     try:
         if is_supported_document(file.filename):
             return process_document_upload(notebook_id, file, llm_provider)
@@ -331,7 +386,8 @@ async def upload_source(
 
 
 @app.post("/ask-question/")
-async def ask_question(request: QuestionRequest):
+async def ask_question(request: QuestionRequest, current_user: dict = Depends(require_user)):
+    require_notebook_owner(request.notebook_id, current_user["id"])
     response_mode = (request.response_mode or "auto").strip().lower()
     detected_diagram_type = detect_requested_diagram_type(request.question)
     if response_mode == "diagram" or (response_mode == "auto" and detected_diagram_type):
@@ -346,7 +402,7 @@ async def ask_question(request: QuestionRequest):
 
 
 @app.post("/api/stop-answer/")
-async def stop_answer(llm_provider: str | None = None):
+async def stop_answer(llm_provider: str | None = None, current_user: dict = Depends(require_user)):
     result = stop_llm_generation(llm_provider)
     if result.get("status") != "success":
         raise HTTPException(status_code=500, detail=result.get("message", "停止回答失敗"))
