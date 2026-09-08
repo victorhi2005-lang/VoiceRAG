@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎙️ VoiceRAG — 智慧語音知識庫系統
+<h1><img src="docs/assets/voicerag-readme-icon.svg" alt="VoiceRAG icon" width="42" height="42" align="absmiddle"> VoiceRAG — 智慧語音知識庫系統</h1>
 
 **以口述建構知識，以 AI 檢索智慧**
 

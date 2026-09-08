@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">VoiceRAG</title>
+  <desc id="desc">A hexagonal VoiceRAG mark containing an audio waveform.</desc>
+  <defs>
+    <linearGradient id="shell" x1="10" y1="8" x2="54" y2="57" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#252D57"/>
+      <stop offset="1" stop-color="#151A35"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="9" y1="10" x2="56" y2="55" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A9B4FF"/>
+      <stop offset="1" stop-color="#7183FF"/>
+    </linearGradient>
+  </defs>
+  <path
+    d="M32 3 58 17.5v29L32 61 6 46.5v-29L32 3Z"
+    fill="url(#shell)"
+    stroke="url(#edge)"
+    stroke-width="5"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M12 32h8l5-14 9 28 7-21 4 7h7"
+    stroke="#F7F8FF"
+    stroke-width="5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="12" cy="32" r="3" fill="#A9B4FF"/>
+  <circle cx="52" cy="32" r="3" fill="#7183FF"/>
+</svg>
