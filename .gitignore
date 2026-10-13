@@ -26,3 +26,6 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
+# Local product video workspace and rendered media
+product-video/

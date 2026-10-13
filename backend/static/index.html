@@ -32,6 +32,47 @@
             color: #e5e7eb;
         }
 
+        .recording-waveform {
+            max-height: 0;
+            margin-top: 0 !important;
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-4px) scaleY(0.92);
+            transform-origin: top;
+            transition: max-height 220ms ease, margin-top 220ms ease, opacity 160ms ease, transform 220ms ease;
+        }
+
+        .recording-waveform.is-active {
+            max-height: 4rem;
+            margin-top: 0.75rem !important;
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateY(0) scaleY(1);
+        }
+
+        .recording-waveform canvas {
+            display: block;
+            flex: 1;
+            height: 2.75rem;
+            min-width: 0;
+            width: auto;
+        }
+
+        .recording-live-dot {
+            animation: recording-live-pulse 1.5s ease-in-out infinite;
+            box-shadow: 0 0 0 0 rgba(190, 125, 125, 0.38);
+        }
+
+        @keyframes recording-live-pulse {
+            70% {
+                box-shadow: 0 0 0 5px rgba(190, 125, 125, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(190, 125, 125, 0);
+            }
+        }
+
         /* 隱藏選單的樣式 */
         .dropdown-content {
             display: none;
@@ -262,23 +303,34 @@
                         <span class="text-sm font-semibold text-gray-300">直接錄音</span>
                         <span id="recordingTimer" class="text-xs text-gray-500 tabular-nums">00:00</span>
                     </div>
-                    <div class="flex gap-2">
+                    <div id="recordingWaveformPanel"
+                        class="recording-waveform overflow-hidden"
+                        aria-hidden="true">
+                        <div class="flex items-center gap-3 py-1">
+                            <span class="flex shrink-0 items-center gap-1.5 text-xs font-medium text-[#c9a3a3]">
+                                <span class="recording-live-dot h-1.5 w-1.5 rounded-full bg-[#b97f7f]"></span>
+                                錄音中
+                            </span>
+                            <canvas id="recordingWaveformCanvas" role="img" aria-label="麥克風即時聲音波形"></canvas>
+                            <button id="stopRecordBtn" type="button" onclick="stopRecording()" disabled
+                                class="hidden h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#493839] text-[#ddc5c5] transition hover:bg-[#574243] disabled:cursor-not-allowed disabled:opacity-40"
+                                aria-label="停止錄音" title="停止錄音">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"
+                                    class="h-3 w-3">
+                                    <path d="M6 6h12v12H6z" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="recordingStartRow" class="flex">
                         <button id="startRecordBtn" type="button" onclick="startRecording()"
-                            class="flex-1 flex items-center justify-center gap-2 py-2 border border-[#555] rounded-lg text-sm text-gray-300 hover:bg-[#333] hover:text-white transition">
+                            class="flex flex-1 items-center justify-center gap-2 rounded-lg bg-[#3a434f] py-2 text-sm font-medium text-gray-100 transition hover:bg-[#444e5b]">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
                                 stroke="currentColor" class="w-4 h-4">
                                 <path stroke-linecap="round" stroke-linejoin="round"
                                     d="M12 18.75a6 6 0 0 0 6-6v-1.5M12 18.75a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 0 3-3V5.25a3 3 0 1 0-6 0v7.5a3 3 0 0 0 3 3Z" />
                             </svg>
                             開始錄音
-                        </button>
-                        <button id="stopRecordBtn" type="button" onclick="stopRecording()" disabled
-                            class="flex-1 flex items-center justify-center gap-2 py-2 border border-red-500/50 rounded-lg text-sm text-red-200 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"
-                                class="w-3.5 h-3.5">
-                                <path d="M6 6h12v12H6z" />
-                            </svg>
-                            停止
                         </button>
                     </div>
                     <p id="recordingStatus" class="text-xs text-gray-500 min-h-[1rem]">錄音完成後會自動加入來源列表。</p>
@@ -698,6 +750,11 @@
         let recordedChunks = [];
         let recordingTimer = null;
         let recordingStartedAt = 0;
+        let recordingAudioContext = null;
+        let recordingAnalyser = null;
+        let recordingWaveformSource = null;
+        let recordingWaveformFrame = null;
+        let recordingWaveformData = null;
         const LLM_PROVIDER_STORAGE_KEY = 'voicerag-llm-provider';
         const DIAGRAM_WORKSPACE_STORAGE_KEY = 'voicerag-diagram-workspace-collapsed';
         const DIAGRAM_WORKSPACE_WIDTH_STORAGE_KEY = 'voicerag-diagram-workspace-width';
@@ -1949,6 +2006,7 @@
         // 頁面載入時，獲取筆記本列表
         document.addEventListener('DOMContentLoaded', () => {
             setAuthMode('login');
+            drawIdleRecordingWaveform();
             restoreSession();
         });
 
@@ -2477,6 +2535,11 @@
             document.getElementById('dashboard-view').classList.add('hidden');
             document.getElementById('workspace-view').classList.remove('hidden');
             setDiagramWorkspaceCollapsed(diagramWorkspaceCollapsed);
+            window.requestAnimationFrame(() => {
+                if (recordingWaveformFrame === null) {
+                    drawIdleRecordingWaveform();
+                }
+            });
         }
 
         // 回到首頁
@@ -3668,13 +3731,147 @@
         function setRecordingStatus(text, tone = 'muted') {
             const status = document.getElementById('recordingStatus');
             status.textContent = text;
-            status.className = `text-xs min-h-[1rem] ${tone === 'error' ? 'text-red-300' : tone === 'active' ? 'text-blue-300' : tone === 'success' ? 'text-green-300' : 'text-gray-500'}`;
+            status.className = `text-xs min-h-[1rem] ${tone === 'error' ? 'text-[#c99b9b]' : tone === 'active' ? 'text-[#9bacc2]' : tone === 'success' ? 'text-[#91ad9b]' : 'text-gray-500'}`;
         }
 
         function setRecordingControls(isRecording) {
-            document.getElementById('startRecordBtn').disabled = isRecording;
-            document.getElementById('stopRecordBtn').disabled = !isRecording;
-            document.getElementById('startRecordBtn').classList.toggle('opacity-40', isRecording);
+            const startButton = document.getElementById('startRecordBtn');
+            const stopButton = document.getElementById('stopRecordBtn');
+            const startRow = document.getElementById('recordingStartRow');
+            startButton.disabled = isRecording;
+            stopButton.disabled = !isRecording;
+            startRow.classList.toggle('hidden', isRecording);
+            startButton.classList.toggle('hidden', isRecording);
+            startButton.classList.toggle('flex', !isRecording);
+            stopButton.classList.toggle('hidden', !isRecording);
+            stopButton.classList.toggle('flex', isRecording);
+        }
+
+        function getRecordingWaveformContext() {
+            const canvas = document.getElementById('recordingWaveformCanvas');
+            if (!canvas) return null;
+
+            const rect = canvas.getBoundingClientRect();
+            const width = Math.max(1, rect.width);
+            const height = Math.max(1, rect.height);
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+            const renderWidth = Math.round(width * pixelRatio);
+            const renderHeight = Math.round(height * pixelRatio);
+
+            if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
+                canvas.width = renderWidth;
+                canvas.height = renderHeight;
+            }
+
+            const context = canvas.getContext('2d');
+            context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+            return { context, width, height };
+        }
+
+        function drawIdleRecordingWaveform() {
+            const waveform = getRecordingWaveformContext();
+            if (!waveform) return;
+
+            const { context, width, height } = waveform;
+            context.clearRect(0, 0, width, height);
+        }
+
+        function drawRecordingWaveform() {
+            if (!recordingAnalyser || !recordingWaveformData) return;
+
+            const waveform = getRecordingWaveformContext();
+            if (!waveform) return;
+
+            const { context, width, height } = waveform;
+            recordingAnalyser.getByteFrequencyData(recordingWaveformData);
+            context.clearRect(0, 0, width, height);
+
+            const barCount = Math.max(24, Math.min(48, Math.floor(width / 8)));
+            const gap = Math.max(2.5, width * 0.006);
+            const barWidth = Math.max(2, Math.min(4, (width - gap * (barCount - 1)) / barCount));
+            const waveformWidth = barCount * barWidth + (barCount - 1) * gap;
+            const startX = (width - waveformWidth) / 2 + barWidth / 2;
+            const centerY = height / 2;
+            const usableBins = Math.min(recordingWaveformData.length, 72);
+
+            context.strokeStyle = 'rgba(137, 153, 168, 0.86)';
+            context.lineWidth = barWidth;
+            context.lineCap = 'round';
+            for (let index = 0; index < barCount; index += 1) {
+                const mirroredPosition = index < barCount / 2 ? index : barCount - 1 - index;
+                const normalizedPosition = mirroredPosition / Math.max(1, barCount / 2 - 1);
+                const binIndex = Math.min(
+                    usableBins - 1,
+                    2 + Math.floor((1 - normalizedPosition) * Math.max(1, usableBins - 3))
+                );
+                const strength = recordingWaveformData[binIndex] / 255;
+                const barHeight = Math.max(3, strength * height * 0.88);
+                const x = startX + index * (barWidth + gap);
+
+                context.beginPath();
+                context.moveTo(x, centerY - barHeight / 2);
+                context.lineTo(x, centerY + barHeight / 2);
+                context.stroke();
+            }
+
+            recordingWaveformFrame = window.requestAnimationFrame(drawRecordingWaveform);
+        }
+
+        function startRecordingWaveform(stream) {
+            stopRecordingWaveform();
+
+            try {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContextClass) {
+                    console.warn('瀏覽器不支援 Web Audio API，略過錄音波形。');
+                    return;
+                }
+
+                recordingAudioContext = new AudioContextClass();
+                recordingAnalyser = recordingAudioContext.createAnalyser();
+                recordingAnalyser.fftSize = 512;
+                recordingAnalyser.smoothingTimeConstant = 0.82;
+                recordingWaveformSource = recordingAudioContext.createMediaStreamSource(stream);
+                recordingWaveformSource.connect(recordingAnalyser);
+                recordingWaveformData = new Uint8Array(recordingAnalyser.frequencyBinCount);
+
+                const waveformPanel = document.getElementById('recordingWaveformPanel');
+                waveformPanel?.classList.add('is-active');
+                waveformPanel?.setAttribute('aria-hidden', 'false');
+
+                if (recordingAudioContext.state === 'suspended') {
+                    recordingAudioContext.resume().catch(() => undefined);
+                }
+                drawRecordingWaveform();
+            } catch (error) {
+                console.warn('無法啟動錄音波形，但錄音會繼續。', error);
+                stopRecordingWaveform();
+            }
+        }
+
+        function stopRecordingWaveform() {
+            if (recordingWaveformFrame !== null) {
+                window.cancelAnimationFrame(recordingWaveformFrame);
+                recordingWaveformFrame = null;
+            }
+            if (recordingWaveformSource) {
+                recordingWaveformSource.disconnect();
+                recordingWaveformSource = null;
+            }
+            if (recordingAnalyser) {
+                recordingAnalyser.disconnect();
+                recordingAnalyser = null;
+            }
+            if (recordingAudioContext) {
+                recordingAudioContext.close().catch(() => undefined);
+                recordingAudioContext = null;
+            }
+            recordingWaveformData = null;
+
+            const waveformPanel = document.getElementById('recordingWaveformPanel');
+            waveformPanel?.classList.remove('is-active');
+            waveformPanel?.setAttribute('aria-hidden', 'true');
+            drawIdleRecordingWaveform();
         }
 
         async function startRecording() {
@@ -3705,6 +3902,7 @@
                     window.clearInterval(recordingTimer);
                     document.getElementById('recordingTimer').textContent = '00:00';
                     setRecordingControls(false);
+                    stopRecordingWaveform();
                     if (recordingStream) {
                         recordingStream.getTracks().forEach(track => track.stop());
                         recordingStream = null;
@@ -3727,6 +3925,7 @@
                 };
 
                 mediaRecorder.start();
+                startRecordingWaveform(recordingStream);
                 recordingStartedAt = Date.now();
                 setRecordingControls(true);
                 setRecordingStatus('錄音中...', 'active');
@@ -3734,6 +3933,11 @@
                     document.getElementById('recordingTimer').textContent = formatRecordingTime(Date.now() - recordingStartedAt);
                 }, 250);
             } catch (error) {
+                stopRecordingWaveform();
+                if (recordingStream) {
+                    recordingStream.getTracks().forEach(track => track.stop());
+                    recordingStream = null;
+                }
                 setRecordingControls(false);
                 setRecordingStatus('無法啟用麥克風，請確認瀏覽器權限。', 'error');
             }
@@ -4027,6 +4231,9 @@
         });
 
         window.addEventListener('resize', function () {
+            if (recordingWaveformFrame === null) {
+                drawIdleRecordingWaveform();
+            }
             if (!diagramWorkspaceCollapsed) {
                 applyDiagramWorkspaceWidth();
                 if (expandedDiagramId) {
